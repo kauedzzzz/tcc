@@ -1,14 +1,20 @@
 {
   "name": "cuidacao-onehealth-tcc",
-  "version": "1.0.0",
-  "description": "CuidAção - Saúde Única (One Health) • Guarujá/SP (Mapeamento Geoespacial de Saúde Pública e Sustentabilidade)",
-  "main": "server.js",
+  "version": "2.0.0",
+  "description": "CuidAção - Saúde Única (One Health) • Guarujá/SP (Mapeamento Geoespacial de Saúde Pública e Sustentabilidade) — site, PWA e app",
+  "main": "server/server.js",
+  "private": true,
   "scripts": {
-    "start": "./run.sh",
-    "dev": "./run.sh"
+    "start": "node server/server.js",
+    "dev": "node --watch server/server.js",
+    "start:env": "node --env-file=.env server/server.js",
+    "cap:add:android": "npx cap add android",
+    "cap:add:ios": "npx cap add ios",
+    "cap:sync": "npx cap sync",
+    "cap:open:android": "npx cap open android",
+    "cap:open:ios": "npx cap open ios"
   },
   "engines": {
     "node": ">=18.0.0"
   }
 }
-

@@ -1,3 +1,8 @@
+-- NOTA: o backend atual persiste em server/data.json (arquivo). Este script é o MODELO ALVO
+-- para migrar para PostgreSQL + PostGIS (recomendado quando houver muitos usuários/avaliações).
+-- Para ficar 100% alinhado ao backend, mantenha a mesma regra: 1 avaliação por usuário/local/dia
+-- (constraint uq_user_location_date) e métricas derivadas das avaliações (trigger abaixo).
+
 -- =====================================================================================
 -- PROJETO TCC: CuidAção - SAÚDE ÚNICA (ONE HEALTH) • GUARUJÁ/SP
 -- Mapeamento Geoespacial de Saúde Pública e Sustentabilidade

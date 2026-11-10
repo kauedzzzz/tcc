@@ -8,13 +8,17 @@
  * =====================================================================================
  */
 
-const API_BASE = window.location.protocol === 'file:' ? 'http://localhost:3000' : '';
+// URL da API: definida em js/config.js (necessário no app nativo, que não roda no mesmo domínio do servidor)
+const API_BASE = (window.CUIDACAO_CONFIG && window.CUIDACAO_CONFIG.apiBase) ||
+  (window.location.protocol === 'file:' ? 'http://localhost:3000' : '');
+const IS_NATIVE_APP = !!(window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function' && window.Capacitor.isNativePlatform());
+let demoLoginEnabled = false;
+let deferredInstallPrompt = null;
 const PEREQUE_COORDS = { lat: -23.93680, lng: -46.18250 };
 const DEFAULT_GUARUJA_COORDS = { lat: PEREQUE_COORDS.lat, lng: PEREQUE_COORDS.lng };
 const STORAGE_COORDS_KEY = 'cuidacao_precise_coords_v2_pereque';
 const STORAGE_MAP_STYLE_KEY = 'cuidacao_map_style';
 const STORAGE_GOOGLE_ACCOUNTS_KEY = 'cuidacao_google_accounts_v1';
-const STORAGE_GOOGLE_CLIENT_ID_KEY = 'cuidacao_google_client_id';
 
 let map;
 let baseLayers = {
@@ -28,6 +32,8 @@ let locationsGroup = L.layerGroup();
 let reportsGroup = L.layerGroup();
 let neighborhoodsGroup = L.layerGroup();
 let userMarker = null;
+let cepHighlightMarker = null;
+let cepFeedbackTimer = null;
 let accuracyCircle = null;
 let geoWatchId = null;
 let pickLocationMode = false; // false | 'user' | 'report'
@@ -44,7 +50,7 @@ let currentLocationSource = 'Bairro do Perequê';
 let currentUser = null;
 let authToken = localStorage.getItem('cuidacao_token') || localStorage.getItem('onehealth_token') || null;
 let cachedLocations = [];
-let googleClientId = localStorage.getItem(STORAGE_GOOGLE_CLIENT_ID_KEY) || '';
+let googleClientId = ''; // definido pelo servidor (/api/v1/auth/google/config)
 
 // ÍCONES VETORIAIS OFICIAIS PARA CADA ENTIDADE DO PROJETO CuidAção
 const SVG_ICONS = {
@@ -720,9 +726,11 @@ function findNearestNeighborhood(lat, lng) {
 // REGISTRO DO SERVICE WORKER (PWA INSTALÁVEL)
 // ============================================================================
 function registerServiceWorkerPwa() {
-  if ('serviceWorker' in navigator && window.location.protocol !== 'file:') {
+  if (IS_NATIVE_APP) return;
+  const secure = window.location.protocol === 'https:' || window.location.hostname === 'localhost';
+  if ('serviceWorker' in navigator && secure) {
     navigator.serviceWorker
-      .register('/sw.js')
+      .register('sw.js')
       .catch((err) => console.warn('Service Worker não registrado:', err.message));
   }
 }
@@ -740,6 +748,7 @@ async function initMap() {
       if (cfg.clientId) {
         googleClientId = cfg.clientId;
       }
+      demoLoginEnabled = !!cfg.demoLogin;
     }
   } catch {
     // Segue com configuração local
@@ -1137,8 +1146,8 @@ async function detectAndApplyUserLocation(forceScan = false) {
     // da central da operadora (ex: Centro do Guarujá, Pitangueiras, Santos ou São Paulo) com baixa precisão.
     // Só aceitamos deslocar o pino automaticamente se for um sinal GPS físico real de altíssima precisão
     // dentro do próprio Bairro do Perequê / arredores imediatos (<= 3.5 km e accuracy <= 120m).
-    if (accuracy <= 120 && distFromPereque <= 3500) {
-      await applyUserCoordinates(lat, lng, 'GPS Exato • Perequê', accuracy, true);
+    if (accuracy <= 300 && distFromPereque <= 30000) {
+      await applyUserCoordinates(lat, lng, 'GPS', accuracy, true);
     }
   };
 
@@ -1205,7 +1214,8 @@ async function applyUserCoordinates(lat, lng, source, accuracyMeters = 10, shoul
 
   const badge = document.getElementById('location-badge');
   if (badge) {
-    const precisionTag = ' <span class="text-[10px] bg-emerald-200 text-emerald-950 px-1.5 py-0.5 rounded-md ml-1 font-extrabold">Perequê / Guarujá</span>';
+    const tagText = distToPereque <= 1800 ? 'Perequê' : (nearestNb.distance <= 3500 ? nearestNb.neighborhood.name : 'Guarujá');
+    const precisionTag = ' <span class="text-[10px] bg-emerald-200 text-emerald-950 px-1.5 py-0.5 rounded-md ml-1 font-extrabold">' + escapeHtml(tagText) + '</span>';
     badge.innerHTML = '📍 <span class="max-w-[160px] sm:max-w-[230px] truncate">' + escapeHtml(currentAddressLabel) + '</span>' + precisionTag;
   }
 
@@ -1215,13 +1225,37 @@ async function applyUserCoordinates(lat, lng, source, accuracyMeters = 10, shoul
 }
 
 function refreshUserLocation() {
-  selectPreciseLocation(PEREQUE_COORDS.lat, PEREQUE_COORDS.lng, 'Bairro do Perequê, Guarujá - SP');
+  const fallbackToPereque = function (msg) {
+    showToast(msg, 'info');
+    selectPreciseLocation(PEREQUE_COORDS.lat, PEREQUE_COORDS.lng, 'Bairro do Perequê, Guarujá - SP');
+  };
+  if (!navigator.geolocation) {
+    fallbackToPereque('Este aparelho não oferece GPS. Mostrando o Bairro do Perequê.');
+    return;
+  }
+  showToast('Buscando sua localização...', 'info');
+  navigator.geolocation.getCurrentPosition(
+    async function (pos) {
+      const lat = pos.coords.latitude;
+      const lng = pos.coords.longitude;
+      const accuracy = pos.coords.accuracy || 9999;
+      if (haversineMeters(lat, lng, PEREQUE_COORDS.lat, PEREQUE_COORDS.lng) > 30000) {
+        fallbackToPereque('Você parece estar fora do Guarujá. Mostrando o Bairro do Perequê.');
+        return;
+      }
+      await applyUserCoordinates(lat, lng, accuracy <= 300 ? 'GPS' : 'Localização aproximada', accuracy, true);
+    },
+    function () {
+      showToast('Não foi possível obter o GPS. Verifique a permissão de localização do aparelho.', 'error');
+    },
+    { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
+  );
 }
 
 function forceGpsScan() {
   localStorage.removeItem(STORAGE_COORDS_KEY);
   detectAndApplyUserLocation(true);
-  showToast('Localização centralizada no Bairro do Perequê, Guarujá - SP!', 'success');
+  showToast('Buscando sua posição por GPS...', 'info');
 }
 
 // ============================================================================
@@ -1447,7 +1481,7 @@ async function loadLocations() {
   apiLocations.forEach(loc => mergedMap.set(loc.id, loc));
   GUARUJA_BUILTIN_LOCATIONS.forEach(loc => {
     if (!mergedMap.has(loc.id)) {
-      mergedMap.set(loc.id, loc);
+      mergedMap.set(loc.id, normalizeLocationRatings(loc));
     }
   });
 
@@ -1493,7 +1527,9 @@ async function loadLocations() {
     const status = evaluateBusinessHours(loc.opening_hours);
     const distanceStr = loc.distance_meters >= 1000 ? (loc.distance_meters / 1000).toFixed(2) + ' km' : loc.distance_meters + ' m';
     const safeId = escapeHtml(loc.id);
-    const scoreBadgeHtml = '<span>Nota: <b class="text-yellow-600">⭐ ' + loc.overall_score + '</b></span>';
+    const scoreBadgeHtml = loc.total_reviews > 0
+      ? '<span>Nota: <b class="text-yellow-600">⭐ ' + loc.overall_score + '</b> <span class="text-gray-400">(' + loc.total_reviews + ')</span></span>'
+      : '<span class="text-gray-400">Sem avaliações ainda</span>';
 
     const popupContent = 
       '<div class="p-1 min-w-[250px] max-w-[290px]">' +
@@ -1573,6 +1609,22 @@ async function loadReports() {
   }
 }
 
+// Deriva nota e contagem das avaliações reais (reviews[]). Usado no dataset embutido de fallback.
+function normalizeLocationRatings(loc) {
+  const copy = Object.assign({}, loc);
+  const reviews = Array.isArray(copy.reviews) ? copy.reviews : [];
+  const n = reviews.length;
+  const avg = function (key) {
+    return n ? Math.round(reviews.reduce(function (acc, r) { return acc + (Number(r[key]) || 0); }, 0) / n * 10) / 10 : 0;
+  };
+  copy.total_reviews = n;
+  copy.avg_wait_time = avg('wait');
+  copy.avg_accessibility = avg('access');
+  copy.avg_humanized_care = avg('care');
+  copy.overall_score = n ? Math.round((copy.avg_wait_time + copy.avg_accessibility + copy.avg_humanized_care) / 3 * 10) / 10 : 0;
+  return copy;
+}
+
 function openSidebarById(id) {
   const found = cachedLocations.find(l => l.id === id);
   if (found) openSidebar(found);
@@ -1607,14 +1659,17 @@ function openSidebar(loc) {
   const unlockedMetricsEl = document.getElementById('side-metrics-unlocked');
   if (unlockedMetricsEl) unlockedMetricsEl.classList.remove('hidden');
 
-  document.getElementById('side-score').innerText = '⭐ ' + loc.overall_score + ' / 5.0';
-  document.getElementById('metric-access').innerText = loc.avg_accessibility;
+  const hasReviews = loc.total_reviews > 0;
+  document.getElementById('side-score').innerText = hasReviews ? '⭐ ' + loc.overall_score + ' / 5.0' : 'Sem avaliações ainda';
+  document.getElementById('metric-access').innerText = hasReviews ? loc.avg_accessibility : '—';
   document.getElementById('bar-access').style.width = (loc.avg_accessibility / 5 * 100) + '%';
-  document.getElementById('metric-wait').innerText = loc.avg_wait_time;
+  document.getElementById('metric-wait').innerText = hasReviews ? loc.avg_wait_time : '—';
   document.getElementById('bar-wait').style.width = (loc.avg_wait_time / 5 * 100) + '%';
-  document.getElementById('metric-care').innerText = loc.avg_humanized_care;
+  document.getElementById('metric-care').innerText = hasReviews ? loc.avg_humanized_care : '—';
   document.getElementById('bar-care').style.width = (loc.avg_humanized_care / 5 * 100) + '%';
-  document.getElementById('side-total-reviews').innerText = loc.total_reviews + ' avaliações registradas';
+  document.getElementById('side-total-reviews').innerText = hasReviews
+    ? loc.total_reviews + (loc.total_reviews === 1 ? ' avaliação registrada' : ' avaliações registradas')
+    : 'Seja a primeira pessoa a avaliar este local';
 
   const revContainer = document.getElementById('side-reviews');
   revContainer.innerHTML = '';
@@ -1668,11 +1723,231 @@ function setFilter(domain) {
 
 let searchDebounce;
 function handleSearch(val) {
+  hideCepFeedback();
   clearTimeout(searchDebounce);
+
+  const trimmed = String(val || '').trim();
+  // Se o usuário estiver digitando apenas números/traço (CEP), não filtra os pontos do mapa para vazio
+  const isTypingCep = /^[\d\s.-]+$/.test(trimmed);
+  if (isTypingCep) {
+    if (currentSearch !== '') {
+      currentSearch = '';
+      loadLocations();
+    }
+    return;
+  }
+
   searchDebounce = setTimeout(() => {
-    currentSearch = val;
+    currentSearch = trimmed;
     loadLocations();
   }, 300);
+}
+
+// ============================================================================
+// BARRA DE PESQUISA COM BUSCA POR CEP (VIACEP + NOMINATIM OPENSTREETMAP)
+// ============================================================================
+function showCepFeedback(message, type = 'info') {
+  const feedbackEl = document.getElementById('cep-search-feedback');
+  if (!feedbackEl) return;
+
+  clearTimeout(cepFeedbackTimer);
+  feedbackEl.className = 'cep-feedback-banner is-' + (type || 'info');
+  feedbackEl.textContent = message;
+
+  cepFeedbackTimer = setTimeout(() => {
+    hideCepFeedback();
+  }, 5500);
+}
+
+function hideCepFeedback() {
+  const feedbackEl = document.getElementById('cep-search-feedback');
+  if (feedbackEl) {
+    feedbackEl.classList.add('hidden');
+  }
+}
+
+function renderCepHighlightMarker(lat, lon, addressData) {
+  if (!map) return;
+
+  const rua = addressData.logradouro || 'Logradouro geral do CEP';
+  const bairro = addressData.bairro || 'Centro / Região Geral';
+  const cidadeUf = (addressData.localidade || '') + (addressData.uf ? '/' + addressData.uf : '');
+  const cepFormatted = addressData.cep || '';
+
+  const popupHtml =
+    '<div class="p-1 min-w-[230px] max-w-[280px] text-xs leading-relaxed">' +
+      '<div class="flex items-center justify-between gap-2 mb-1.5">' +
+        '<span class="px-2 py-0.5 rounded bg-emerald-600 text-white text-[10px] font-extrabold uppercase tracking-wider">📍 CEP Localizado</span>' +
+        (cepFormatted ? '<span class="text-[11px] font-bold text-emerald-800 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">' + escapeHtml(cepFormatted) + '</span>' : '') +
+      '</div>' +
+      '<p class="text-gray-900 font-black text-sm leading-snug">' + escapeHtml(rua) + '</p>' +
+      '<div class="mt-1.5 pt-1.5 border-t border-gray-100 space-y-0.5 text-gray-700">' +
+        '<p><b>Bairro:</b> ' + escapeHtml(bairro) + '</p>' +
+        '<p><b>Cidade/UF:</b> ' + escapeHtml(cidadeUf) + '</p>' +
+      '</div>' +
+    '</div>';
+
+  const pinIcon = L.divIcon({
+    className: '',
+    html:
+      '<div class="cep-highlight-pin">' +
+        '<div class="w-10 h-10 rounded-2xl bg-emerald-600 flex items-center justify-center shadow-lg border-2 border-white ring-2 ring-emerald-400/50 text-white text-base">' +
+          '📍' +
+        '</div>' +
+        '<div class="w-3 h-3 rotate-45 -mt-1.5 bg-emerald-600 border-r-2 border-b-2 border-white shadow-sm"></div>' +
+      '</div>',
+    iconSize: [44, 50],
+    iconAnchor: [22, 50],
+    popupAnchor: [0, -48]
+  });
+
+  if (cepHighlightMarker) {
+    cepHighlightMarker.setLatLng([lat, lon]);
+    cepHighlightMarker.setIcon(pinIcon);
+    cepHighlightMarker.setPopupContent(popupHtml);
+  } else {
+    cepHighlightMarker = L.marker([lat, lon], {
+      icon: pinIcon,
+      zIndexOffset: 1200
+    }).addTo(map);
+    cepHighlightMarker.bindPopup(popupHtml);
+  }
+
+  cepHighlightMarker.openPopup();
+}
+
+async function searchByCep(rawInput) {
+  const searchBtn = document.getElementById('btn-cep-search');
+
+  // a) Limpa a formatação do CEP digitado (apenas números, 8 dígitos)
+  const cep = String(rawInput || '').replace(/\D/g, '');
+
+  if (cep.length !== 8) {
+    const msg = 'CEP inválido. Digite um CEP válido com 8 números (ex: 01001-000 ou 11446000).';
+    showCepFeedback(msg, 'error');
+    showToast(msg, 'error');
+    return;
+  }
+
+  try {
+    if (searchBtn) {
+      searchBtn.disabled = true;
+      searchBtn.innerHTML = '<span>...</span>';
+    }
+    showCepFeedback('Consultando CEP ' + cep.slice(0, 5) + '-' + cep.slice(5) + '...', 'info');
+
+    // b) Consulta a API gratuita do ViaCEP
+    const viaCepResponse = await fetch(`https://viacep.com.br/ws/${cep}/json/`);
+    if (!viaCepResponse.ok) {
+      throw new Error('Falha ao consultar o serviço ViaCEP.');
+    }
+
+    const data = await viaCepResponse.json();
+
+    // c) Caso o CEP seja inválido ou não encontrado, exibe aviso amigável
+    if (!data || data.erro) {
+      const notFoundMsg = 'CEP não encontrado. Verifique os números informados e tente novamente.';
+      showCepFeedback(notFoundMsg, 'error');
+      showToast(notFoundMsg, 'error');
+      return;
+    }
+
+    // d) Consulta a API gratuita do Nominatim/OpenStreetMap para obter latitude e longitude
+    const primaryQuery = `${data.logradouro}, ${data.bairro}, ${data.localidade} - ${data.uf}, Brasil`;
+    const primaryUrl = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(primaryQuery)}&limit=1`;
+
+    let geoResults = [];
+    if (data.logradouro) {
+      const nominatimRes = await fetch(primaryUrl, {
+        headers: { 'Accept-Language': 'pt-BR,pt;q=0.9' }
+      });
+      if (nominatimRes.ok) {
+        geoResults = await nominatimRes.json();
+      }
+    }
+
+    // Fallback buscando apenas "${data.bairro}, ${data.localidade} - ${data.uf}" caso o logradouro não traga resultado
+    if (!Array.isArray(geoResults) || geoResults.length === 0) {
+      const fallbackQuery = `${data.bairro}, ${data.localidade} - ${data.uf}`;
+      const fallbackUrl = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(fallbackQuery)}&limit=1`;
+      const fallbackRes = await fetch(fallbackUrl, {
+        headers: { 'Accept-Language': 'pt-BR,pt;q=0.9' }
+      });
+      if (fallbackRes.ok) {
+        geoResults = await fallbackRes.json();
+      }
+    }
+
+    // Fallback adicional para CEPs gerais de município sem bairro específico
+    if (!Array.isArray(geoResults) || geoResults.length === 0) {
+      const cityFallbackQuery = `${data.localidade} - ${data.uf}, Brasil`;
+      const cityFallbackUrl = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(cityFallbackQuery)}&limit=1`;
+      const cityRes = await fetch(cityFallbackUrl, {
+        headers: { 'Accept-Language': 'pt-BR,pt;q=0.9' }
+      });
+      if (cityRes.ok) {
+        geoResults = await cityRes.json();
+      }
+    }
+
+    if (!Array.isArray(geoResults) || geoResults.length === 0) {
+      const noCoordMsg = 'Endereço encontrado no ViaCEP, mas não foi possível localizar as coordenadas no mapa.';
+      showCepFeedback(noCoordMsg, 'error');
+      showToast(noCoordMsg, 'error');
+      return;
+    }
+
+    const lat = parseFloat(geoResults[0].lat);
+    const lon = parseFloat(geoResults[0].lon);
+
+    if (isNaN(lat) || isNaN(lon)) {
+      throw new Error('Coordenadas retornadas são inválidas.');
+    }
+
+    // e) Move a câmera do Leaflet usando map.setView([lat, lon], 16) com animação suave
+    if (map) {
+      map.setView([lat, lon], 16, { animate: true, duration: 0.9 });
+    }
+
+    // f) Cria (ou move) um marcador de destaque nessa posição com popup formatado (Rua, Bairro, Cidade/UF)
+    renderCepHighlightMarker(lat, lon, data);
+
+    const summaryAddress = [data.logradouro, data.bairro, `${data.localidade}/${data.uf}`]
+      .filter(Boolean)
+      .join(' • ');
+    showCepFeedback('Localizado: ' + summaryAddress, 'success');
+    showToast('CEP localizado: ' + summaryAddress, 'success');
+  } catch (err) {
+    console.error('Erro na busca por CEP:', err);
+    const errMsg = 'Não foi possível buscar o CEP no momento. Verifique sua conexão e tente novamente.';
+    showCepFeedback(errMsg, 'error');
+    showToast(errMsg, 'error');
+  } finally {
+    if (searchBtn) {
+      searchBtn.disabled = false;
+      searchBtn.innerHTML = '<span>Buscar</span>';
+    }
+  }
+}
+
+function handleCepSearchSubmit() {
+  const inputEl = document.getElementById('search-input');
+  if (!inputEl) return;
+  const rawValue = inputEl.value.trim();
+
+  // Caso o usuário tenha digitado um texto de filtro de unidades (ex: "UBS", "UPA") sem dígitos,
+  // e exista correspondência direta nos locais, foca no primeiro local ou executa a validação de CEP
+  const digits = rawValue.replace(/\D/g, '');
+  if (rawValue && digits.length === 0 && cachedLocations.length > 0) {
+    const firstLoc = cachedLocations[0];
+    if (map && firstLoc) {
+      map.setView([firstLoc.lat, firstLoc.lng], 16, { animate: true, duration: 0.9 });
+      openSidebar(firstLoc);
+      return;
+    }
+  }
+
+  searchByCep(rawValue);
 }
 
 function changeRadius(val) {
@@ -1681,6 +1956,11 @@ function changeRadius(val) {
 }
 
 async function syncOsmLive() {
+  if (!authToken) {
+    showToast('Entre na sua conta para buscar novos pontos no OpenStreetMap.', 'info');
+    openLoginModal();
+    return;
+  }
   const btn = document.getElementById('btn-sync-osm');
   btn.innerHTML = '<span class="animate-spin">🌀</span> Buscando...';
   btn.disabled = true;
@@ -1688,11 +1968,11 @@ async function syncOsmLive() {
   try {
     const res = await fetch(API_BASE + '/api/v1/seed/osm-live', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
       body: JSON.stringify({ lat: userCoords.lat, lng: userCoords.lng, radius: currentRadius })
     });
     const data = await res.json();
-    showToast(data.message || 'Sincronização com OpenStreetMap concluída!', 'success');
+    showToast(data.message || data.error || 'Sincronização com OpenStreetMap concluída!', res.ok ? 'success' : 'error');
     loadLocations();
   } catch {
     showToast('Erro ao consultar o servidor OpenStreetMap.', 'error');
@@ -1729,6 +2009,16 @@ function saveGoogleAccountToDevice(account) {
 }
 
 function startGoogleSignIn() {
+  if (IS_NATIVE_APP) {
+    showToast('No app, entre com e-mail e senha. O login com Google nativo ainda não está ativado.', 'info');
+    openLoginModal();
+    return;
+  }
+  if (!googleClientId && !demoLoginEnabled) {
+    showToast('Login com Google não está configurado neste servidor. Use e-mail e senha.', 'info');
+    openLoginModal();
+    return;
+  }
   if (googleClientId && window.google && window.google.accounts && window.google.accounts.oauth2) {
     try {
       const tokenClient = window.google.accounts.oauth2.initTokenClient({
@@ -1753,9 +2043,13 @@ function startGoogleSignIn() {
 function openGoogleAccountModal() {
   const modal = document.getElementById('modal-google-account');
   const errEl = document.getElementById('google-modal-error');
-  const clientIdInput = document.getElementById('google-custom-client-id');
   if (errEl) errEl.classList.add('hidden');
-  if (clientIdInput) clientIdInput.value = googleClientId || '';
+  const directForm = document.getElementById('google-direct-form');
+  const savedBox = document.getElementById('saved-google-accounts');
+  const unavailableMsg = document.getElementById('google-unavailable-msg');
+  if (directForm) directForm.classList.toggle('hidden', !demoLoginEnabled);
+  if (savedBox) savedBox.classList.toggle('hidden', !demoLoginEnabled);
+  if (unavailableMsg) unavailableMsg.classList.toggle('hidden', demoLoginEnabled);
 
   renderSavedGoogleAccounts();
   if (modal) modal.classList.remove('hidden');
@@ -1834,7 +2128,7 @@ async function completeGoogleAuthOnServer(payload) {
       authToken = json.token;
       currentUser = json.user;
       localStorage.setItem('cuidacao_token', authToken);
-      saveGoogleAccountToDevice(json.user);
+      if (json.user && json.user.provider === 'demo') saveGoogleAccountToDevice(json.user);
 
       closeGoogleAccountModal();
       closeLoginModal();
@@ -1858,21 +2152,6 @@ async function completeGoogleAuthOnServer(payload) {
     } else {
       showToast('Erro de conexão com o servidor.', 'error');
     }
-  }
-}
-
-function saveCustomGoogleClientId() {
-  const input = document.getElementById('google-custom-client-id');
-  if (!input) return;
-  const val = input.value.trim();
-  googleClientId = val;
-  if (val) {
-    localStorage.setItem(STORAGE_GOOGLE_CLIENT_ID_KEY, val);
-    closeGoogleAccountModal();
-    startGoogleSignIn();
-  } else {
-    localStorage.removeItem(STORAGE_GOOGLE_CLIENT_ID_KEY);
-    showToast('Client ID removido. Usando o seletor direto de Conta Google.', 'info');
   }
 }
 
@@ -2206,6 +2485,59 @@ async function handleReportSubmit(e) {
   } catch {
     showToast('Erro de comunicação com o servidor.', 'error');
   }
+}
+
+// ============================================================================
+// 7. EXPERIÊNCIA DE APP: INSTALAÇÃO (PWA), OFFLINE/ONLINE E BOTÃO VOLTAR (ANDROID)
+// ============================================================================
+window.addEventListener('beforeinstallprompt', function (e) {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  const btn = document.getElementById('btn-install-app');
+  if (btn) btn.classList.remove('hidden');
+});
+
+function installApp() {
+  if (!deferredInstallPrompt) return;
+  deferredInstallPrompt.prompt();
+  deferredInstallPrompt.userChoice.finally(function () {
+    deferredInstallPrompt = null;
+    const btn = document.getElementById('btn-install-app');
+    if (btn) btn.classList.add('hidden');
+  });
+}
+
+window.addEventListener('appinstalled', function () {
+  const btn = document.getElementById('btn-install-app');
+  if (btn) btn.classList.add('hidden');
+  showToast('CuidAção instalado! Procure o ícone na sua tela inicial.', 'success');
+});
+
+window.addEventListener('offline', function () {
+  showToast('Você está offline. Mostrando os últimos dados carregados.', 'info');
+});
+window.addEventListener('online', function () {
+  showToast('Conexão restabelecida.', 'success');
+  if (map) { loadLocations(); loadReports(); }
+});
+
+function handleAndroidBack() {
+  const modalIds = ['modal-review', 'modal-report', 'modal-login', 'modal-location', 'modal-google-account', 'modal-about'];
+  for (const id of modalIds) {
+    const el = document.getElementById(id);
+    if (el && !el.classList.contains('hidden')) { el.classList.add('hidden'); return; }
+  }
+  const sidebarEl = document.getElementById('sidebar');
+  if (sidebarEl && !sidebarEl.classList.contains('hidden')) { closeSidebar(); return; }
+  if (pickLocationMode) { cancelPickLocationMode(); return; }
+  const homeEl = document.getElementById('home-screen');
+  if (homeEl && homeEl.classList.contains('hidden')) { showHomeScreen(); return; }
+  const appPlugin = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.App;
+  if (appPlugin && appPlugin.exitApp) appPlugin.exitApp();
+}
+
+if (IS_NATIVE_APP && window.Capacitor.Plugins && window.Capacitor.Plugins.App) {
+  window.Capacitor.Plugins.App.addListener('backButton', handleAndroidBack);
 }
 
 window.onload = initMap;

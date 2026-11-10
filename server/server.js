@@ -13,10 +13,14 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { promisify } = require('util');
+const scryptAsync = promisify(crypto.scrypt);
 
 const {
   db,
   saveDatabase,
+  flushDatabase,
+  recomputeLocationMetrics,
   PEREQUE_CENTER,
   GUARUJA_CENTER,
   GUARUJA_PLACES,
@@ -27,21 +31,96 @@ const {
 } = require('./database');
 
 const PORT = process.env.PORT || 3000;
-const JWT_SECRET = process.env.JWT_SECRET || 'secret_cuidacao_onehealth_tcc_2026';
+const IS_PROD = process.env.NODE_ENV === 'production';
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
+const KEEP_DEMO_RATINGS = process.env.KEEP_DEMO_RATINGS === '1';
+const TRUST_PROXY = process.env.TRUST_PROXY === '1';
+const JWT_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 dias (app mobile: evita pedir login todo dia)
 
-// Diretórios de arquivos estáticos (HTML, CSS e JS separados)
+// Login "demo" (sem Google real): só em desenvolvimento sem GOOGLE_CLIENT_ID, ou se ALLOW_DEMO_LOGIN=1.
+// Em produção, deixe desligado: ele NÃO verifica a posse do e-mail.
+const DEMO_LOGIN_ENABLED = process.env.ALLOW_DEMO_LOGIN === '1' || (!IS_PROD && !GOOGLE_CLIENT_ID);
+
+// Origens autorizadas a chamar a API de outro domínio (ex.: o app Capacitor).
+// Requisições do próprio site (mesma origem) não precisam de CORS.
+const DEFAULT_ORIGINS = ['capacitor://localhost', 'http://localhost', 'https://localhost', 'ionic://localhost'];
+const ALLOWED_ORIGINS = new Set(
+  (process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : DEFAULT_ORIGINS).map(o => o.trim()).filter(Boolean)
+);
+const ALLOW_ANY_ORIGIN = ALLOWED_ORIGINS.has('*');
+
+// Segredo do JWT: variável de ambiente > arquivo local gerado automaticamente (nunca um valor fixo no código)
+const DATA_DIR_FOR_SECRET = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : __dirname;
+function loadJwtSecret() {
+  if (process.env.JWT_SECRET) return process.env.JWT_SECRET;
+  if (IS_PROD) {
+    console.error('❌ Defina a variável JWT_SECRET em produção (ex.: openssl rand -hex 48).');
+    process.exit(1);
+  }
+  const file = path.join(DATA_DIR_FOR_SECRET, '.jwt-secret');
+  try {
+    return fs.readFileSync(file, 'utf8').trim();
+  } catch {
+    const generated = crypto.randomBytes(48).toString('hex');
+    try { fs.writeFileSync(file, generated, { mode: 0o600 }); } catch { /* usa só em memória */ }
+    return generated;
+  }
+}
+const JWT_SECRET = loadJwtSecret();
+
+// Diretório dos arquivos estáticos do site/app (index.html, css, js, ícones, sw.js, manifest)
 const ROOT_DIR = path.resolve(__dirname, '..');
-const HTML_FILE = path.join(ROOT_DIR, 'html', 'index.html');
-const CSS_FILE = path.join(ROOT_DIR, 'css', 'styles.css');
-const JS_FILE = path.join(ROOT_DIR, 'js', 'app.js');
+const PUBLIC_DIR = path.join(ROOT_DIR, 'public');
+
+// Área de cobertura (Guarujá/SP, com margem) usada para validar coordenadas de alertas
+const COVERAGE = { minLat: -24.12, maxLat: -23.82, minLng: -46.40, maxLng: -46.05 };
+function inCoverage(lat, lng) {
+  return Number.isFinite(lat) && Number.isFinite(lng) &&
+    lat >= COVERAGE.minLat && lat <= COVERAGE.maxLat && lng >= COVERAGE.minLng && lng <= COVERAGE.maxLng;
+}
+
+const REPORT_TYPES = ['foco_dengue', 'descarte_irregular', 'terreno_baldio', 'esgoto_ceu_aberto'];
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+// ============================================================================
+// LIMITADOR DE REQUISIÇÕES (em memória, por IP) — protege login e escrita
+// ============================================================================
+const rateBuckets = new Map();
+function clientIp(req) {
+  if (TRUST_PROXY) {
+    const fwd = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+    if (fwd) return fwd;
+  }
+  return req.socket.remoteAddress || 'unknown';
+}
+function rateLimited(req, res, bucket, max, windowMs) {
+  const key = bucket + ':' + clientIp(req);
+  const now = Date.now();
+  let entry = rateBuckets.get(key);
+  if (!entry || now > entry.reset) {
+    entry = { count: 0, reset: now + windowMs };
+    rateBuckets.set(key, entry);
+  }
+  entry.count++;
+  if (entry.count > max) {
+    const retry = Math.ceil((entry.reset - now) / 1000);
+    res.setHeader('Retry-After', String(retry));
+    sendJSON(res, 429, { error: 'Muitas tentativas. Aguarde ' + retry + 's e tente novamente.' });
+    return true;
+  }
+  return false;
+}
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of rateBuckets) if (now > v.reset) rateBuckets.delete(k);
+}, 60000).unref();
 
 // ============================================================================
 // CRIPTOGRAFIA E TOKENS JWT
 // ============================================================================
 function generateJWT(payload) {
   const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
-  const body = Buffer.from(JSON.stringify({ ...payload, exp: Date.now() + 86400000 })).toString('base64url');
+  const body = Buffer.from(JSON.stringify({ ...payload, exp: Date.now() + JWT_TTL_MS })).toString('base64url');
   const signature = crypto.createHmac('sha256', JWT_SECRET).update(header + '.' + body).digest('base64url');
   return header + '.' + body + '.' + signature;
 }
@@ -53,7 +132,9 @@ function verifyJWT(token) {
     if (parts.length !== 3) return null;
     const [header, body, signature] = parts;
     const expectedSig = crypto.createHmac('sha256', JWT_SECRET).update(header + '.' + body).digest('base64url');
-    if (signature !== expectedSig) return null;
+    const a = Buffer.from(signature);
+    const b = Buffer.from(expectedSig);
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
     const data = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
     if (data.exp && Date.now() > data.exp) return null;
     return data;
@@ -61,56 +142,6 @@ function verifyJWT(token) {
     return null;
   }
 }
-
-// ============================================================================
-// SERVICE WORKER OFICIAL DO PWA CuidAção (/sw.js)
-// ============================================================================
-const SERVICE_WORKER_SOURCE = `
-const CACHE_NAME = 'cuidacao-pwa-v2';
-const STATIC_ASSETS = [
-  '/',
-  '/css/styles.css',
-  '/js/app.js',
-  '/manifest.json'
-];
-
-self.addEventListener('install', (event) => {
-  self.skipWaiting();
-  event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(STATIC_ASSETS)).catch(() => {})
-  );
-});
-
-self.addEventListener('activate', (event) => {
-  event.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)))
-    ).then(() => self.clients.claim())
-  );
-});
-
-self.addEventListener('fetch', (event) => {
-  const req = event.request;
-  if (req.method !== 'GET') return;
-
-  const reqUrl = new URL(req.url);
-  if (reqUrl.pathname.startsWith('/api/')) {
-    return;
-  }
-
-  event.respondWith(
-    fetch(req)
-      .then((networkRes) => {
-        if (networkRes && networkRes.status === 200 && reqUrl.origin === self.location.origin) {
-          const clone = networkRes.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(req, clone)).catch(() => {});
-        }
-        return networkRes;
-      })
-      .catch(() => caches.match(req))
-  );
-});
-`.trim();
 
 // ============================================================================
 // INGESTÃO DE DADOS ABERTOS REAIS (OPENSTREETMAP OVERPASS)
@@ -225,7 +256,7 @@ function fetchRealOsmPoints(lat, lng, radiusMeters = 6000) {
             };
 
             db.locations.push({
-              id: 'osm-real-' + (el.id || i),
+              id: 'osm-' + (el.type || 'x') + '-' + (el.id || i),
               categoryId: catId,
               categoryName: catName,
               domain,
@@ -239,12 +270,13 @@ function fetchRealOsmPoints(lat, lng, radiusMeters = 6000) {
               lng: elLon,
               services,
               opening_hours: hours,
-              avg_wait_time: 4.2,
-              avg_accessibility: 4.5,
-              avg_humanized_care: 4.4,
-              overall_score: 4.4,
-              total_reviews: 14,
-              reviews: []
+              avg_wait_time: 0,
+              avg_accessibility: 0,
+              avg_humanized_care: 0,
+              overall_score: 0,
+              total_reviews: 0,
+              reviews: [],
+              source: 'openstreetmap'
             });
             added++;
           });
@@ -270,10 +302,71 @@ function fetchRealOsmPoints(lat, lng, radiusMeters = 6000) {
 // ============================================================================
 // PARSER E HELPERS HTTP
 // ============================================================================
+// ============================================================================
+// SENHAS (scrypt ASSÍNCRONO: não trava o servidor) E AUTENTICAÇÃO POR BEARER TOKEN
+// ============================================================================
+async function hashPasswordAsync(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const key = await scryptAsync(String(password), salt, 64);
+  return `scrypt$${salt}$${key.toString('hex')}`;
+}
+
+async function verifyPasswordAsync(password, storedHash) {
+  try {
+    if (!password || !storedHash) return false;
+    if (storedHash.startsWith('scrypt$')) {
+      const parts = storedHash.split('$');
+      if (parts.length !== 3) return false;
+      const original = Buffer.from(parts[2], 'hex');
+      const derived = await scryptAsync(String(password), parts[1], 64);
+      return derived.length === original.length && crypto.timingSafeEqual(derived, original);
+    }
+    return verifyPassword(password, storedHash); // hashes SHA-256 legados
+  } catch {
+    return false;
+  }
+}
+
+function getAuthUser(req) {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : null;
+  return verifyJWT(token);
+}
+
+function publicUser(user, provider) {
+  return { id: user.id, name: user.name, email: user.email, picture: user.picture || null, provider: provider || user.provider || 'local' };
+}
+
+function todayInBrazil() {
+  return new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+}
+
+const MAX_BODY_BYTES = 100 * 1024;
+
+// Importação em segundo plano com "cooldown" por área
+const osmCooldown = new Map();
+function maybeImportOsmInBackground(lat, lng, radius) {
+  if (calculateDistanceMeters(lat, lng, GUARUJA_CENTER.lat, GUARUJA_CENTER.lng) > 60000) return;
+  const key = lat.toFixed(2) + ',' + lng.toFixed(2);
+  const last = osmCooldown.get(key) || 0;
+  if (Date.now() - last < 10 * 60 * 1000) return;
+  osmCooldown.set(key, Date.now());
+  fetchRealOsmPoints(lat, lng, Math.min(radius, 10000)).catch(() => {});
+}
+
 function parseBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
-    req.on('data', chunk => body += chunk);
+    let size = 0;
+    req.on('data', chunk => {
+      size += chunk.length;
+      if (size > MAX_BODY_BYTES) {
+        reject(new Error('Corpo da requisição muito grande.'));
+        req.destroy();
+        return;
+      }
+      body += chunk;
+    });
     req.on('end', () => {
       try {
         resolve(body ? JSON.parse(body) : {});
@@ -281,38 +374,106 @@ function parseBody(req) {
         reject(err);
       }
     });
+    req.on('error', reject);
   });
 }
+
+function corsHeaders(req) {
+  const origin = req && req.headers ? req.headers.origin : '';
+  const headers = {};
+  if (origin && (ALLOW_ANY_ORIGIN || ALLOWED_ORIGINS.has(origin))) {
+    headers['Access-Control-Allow-Origin'] = ALLOW_ANY_ORIGIN ? '*' : origin;
+    headers['Vary'] = 'Origin';
+    headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization';
+    headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS';
+  }
+  return headers;
+}
+
+const SECURITY_HEADERS = {
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'strict-origin-when-cross-origin',
+  'X-Frame-Options': 'SAMEORIGIN',
+  'Permissions-Policy': 'geolocation=(self)'
+};
 
 function sendJSON(res, statusCode, data) {
   res.writeHead(statusCode, {
     'Content-Type': 'application/json; charset=utf-8',
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
+    'Cache-Control': 'no-store',
+    ...SECURITY_HEADERS,
+    ...corsHeaders(res.req)
   });
   res.end(JSON.stringify(data));
 }
 
-function serveStaticFile(res, filePath, contentType) {
-  fs.readFile(filePath, 'utf8', (err, content) => {
-    if (err) {
-      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-      return res.end('Arquivo não encontrado: ' + path.basename(filePath));
+const MIME_TYPES = {
+  '.html': 'text/html; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'application/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.webmanifest': 'application/manifest+json; charset=utf-8',
+  '.png': 'image/png',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+  '.jpg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.txt': 'text/plain; charset=utf-8'
+};
+
+// Serve arquivos de /public com proteção contra path traversal
+function serveStatic(req, res, pathname) {
+  let rel;
+  try {
+    rel = decodeURIComponent(pathname);
+  } catch {
+    res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+    return res.end('Requisição inválida.');
+  }
+  if (rel === '/html/index.html' || rel === '/html/' || rel === '/html') {
+    res.writeHead(302, { Location: '/', ...SECURITY_HEADERS });
+    return res.end();
+  }
+  if (rel === '/') rel = '/index.html';
+
+  const filePath = path.normalize(path.join(PUBLIC_DIR, rel));
+  if (filePath !== PUBLIC_DIR && !filePath.startsWith(PUBLIC_DIR + path.sep)) {
+    res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+    return res.end('Acesso negado.');
+  }
+
+  fs.stat(filePath, (err, stat) => {
+    if (err || !stat.isFile()) {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8', ...SECURITY_HEADERS });
+      return res.end('Arquivo não encontrado.');
     }
-    res.writeHead(200, {
-      'Content-Type': contentType,
-      'Cache-Control': 'no-cache'
-    });
-    res.end(content);
+    const ext = path.extname(filePath).toLowerCase();
+    const isIcon = rel.startsWith('/icons/');
+    const headers = {
+      'Content-Type': MIME_TYPES[ext] || 'application/octet-stream',
+      'Content-Length': stat.size,
+      'Cache-Control': isIcon ? 'public, max-age=604800' : 'no-cache',
+      ...SECURITY_HEADERS
+    };
+    if (rel === '/sw.js') headers['Service-Worker-Allowed'] = '/';
+    if (rel === '/manifest.json') headers['Content-Type'] = 'application/manifest+json; charset=utf-8';
+    res.writeHead(200, headers);
+    if (req.method === 'HEAD') return res.end();
+    fs.createReadStream(filePath).pipe(res);
   });
 }
 
-function httpsGet(requestUrl, timeoutMs = 5000, extraHeaders = {}) {
+// Requisições a serviços externos (ViaCEP / Nominatim / Google) com cache e limite de taxa.
+// A política de uso do Nominatim exige no máximo ~1 requisição/segundo e cache de resultados.
+const geoCache = new Map();
+const GEO_CACHE_TTL_MS = 60 * 60 * 1000;
+let nominatimChain = Promise.resolve();
+
+function httpsGetRaw(requestUrl, timeoutMs = 5000, extraHeaders = {}) {
   return new Promise((resolve, reject) => {
     const req = https.get(requestUrl, {
       headers: {
-        'User-Agent': 'CuidAcaoOneHealthTCC/5.0 (pesquisa-academica)',
+        'User-Agent': 'CuidAcaoOneHealthTCC/6.0 (pesquisa-academica)',
         'Accept-Language': 'pt-BR,pt;q=0.9',
         ...extraHeaders
       },
@@ -340,6 +501,29 @@ function httpsGet(requestUrl, timeoutMs = 5000, extraHeaders = {}) {
   });
 }
 
+function httpsGet(requestUrl, timeoutMs = 5000, extraHeaders = {}) {
+  const hasAuth = Object.keys(extraHeaders).length > 0;
+  const host = new URL(requestUrl).hostname;
+  const cacheable = !hasAuth && (host === 'nominatim.openstreetmap.org' || host === 'viacep.com.br');
+  if (!cacheable) return httpsGetRaw(requestUrl, timeoutMs, extraHeaders);
+
+  const hit = geoCache.get(requestUrl);
+  if (hit && Date.now() - hit.at < GEO_CACHE_TTL_MS) return Promise.resolve(hit.value);
+
+  const run = () => httpsGetRaw(requestUrl, timeoutMs).then(value => {
+    if (geoCache.size > 500) geoCache.delete(geoCache.keys().next().value);
+    geoCache.set(requestUrl, { at: Date.now(), value });
+    return value;
+  });
+
+  if (host !== 'nominatim.openstreetmap.org') return run();
+
+  // Serializa chamadas ao Nominatim com intervalo de 1,1 s
+  const task = nominatimChain.then(run, run);
+  nominatimChain = task.then(() => new Promise(r => setTimeout(r, 1100)), () => new Promise(r => setTimeout(r, 1100)));
+  return task;
+}
+
 // ============================================================================
 // SERVIDOR HTTP PRINCIPAL
 // ============================================================================
@@ -350,56 +534,26 @@ const server = http.createServer(async (req, res) => {
   const query = Object.fromEntries(parsedUrl.searchParams);
 
   if (req.method === 'OPTIONS') {
-    res.writeHead(204, {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
-    });
+    res.writeHead(204, { ...SECURITY_HEADERS, ...corsHeaders(req) });
     return res.end();
   }
 
-  // Arquivos Estáticos (HTML, CSS e JS nas pastas separadas)
-  if (req.method === 'GET' && (pathname === '/' || pathname === '/index.html' || pathname === '/html/index.html')) {
-    return serveStaticFile(res, HTML_FILE, 'text/html; charset=utf-8');
+  // Health check (hospedagem e monitoramento)
+  if (req.method === 'GET' && pathname === '/api/v1/health') {
+    return sendJSON(res, 200, { status: 'ok', uptime: Math.round(process.uptime()), locations: db.locations.length });
   }
 
-  if (req.method === 'GET' && (pathname === '/css/styles.css' || pathname === '/styles.css')) {
-    return serveStaticFile(res, CSS_FILE, 'text/css; charset=utf-8');
-  }
-
-  if (req.method === 'GET' && (pathname === '/js/app.js' || pathname === '/app.js')) {
-    return serveStaticFile(res, JS_FILE, 'application/javascript; charset=utf-8');
-  }
-
-  // Service Worker PWA (/sw.js)
-  if (req.method === 'GET' && pathname === '/sw.js') {
-    res.writeHead(200, {
-      'Content-Type': 'application/javascript; charset=utf-8',
-      'Service-Worker-Allowed': '/',
-      'Cache-Control': 'no-cache'
-    });
-    return res.end(SERVICE_WORKER_SOURCE);
-  }
-
-  // Manifest PWA Oficial CuidAção
-  if (req.method === 'GET' && pathname === '/manifest.json') {
-    res.writeHead(200, { 'Content-Type': 'application/manifest+json; charset=utf-8' });
-    return res.end(JSON.stringify({
-      short_name: "CuidAção",
-      name: "CuidAção - Saúde Única (One Health) • Guarujá/SP",
-      description: "Mapeamento Geoespacial de Saúde Pública e Sustentabilidade no Guarujá/SP",
-      start_url: "/",
-      background_color: "#064E3B",
-      theme_color: "#10B981",
-      display: "standalone"
-    }));
+  // Site / PWA: qualquer GET que não seja da API é servido da pasta /public
+  if ((req.method === 'GET' || req.method === 'HEAD') && !pathname.startsWith('/api/')) {
+    return serveStatic(req, res, pathname);
   }
 
   // Configuração OAuth do Google
   if (req.method === 'GET' && pathname === '/api/v1/auth/google/config') {
     return sendJSON(res, 200, {
       status: 'success',
-      clientId: GOOGLE_CLIENT_ID
+      clientId: GOOGLE_CLIENT_ID,
+      demoLogin: DEMO_LOGIN_ENABLED
     });
   }
 
@@ -411,8 +565,9 @@ const server = http.createServer(async (req, res) => {
       status: 'success',
       latitude: PEREQUE_CENTER.lat,
       longitude: PEREQUE_CENTER.lng,
-      accuracy: 25,
-      isCoarseIp: false,
+      accuracy: 5000,
+      isCoarseIp: true,
+      approximate: true,
       neighborhood: 'Perequê',
       city: 'Bairro do Perequê, Guarujá',
       state: 'SP'
@@ -421,6 +576,7 @@ const server = http.createServer(async (req, res) => {
 
   // Reverse geocoding de alta precisão (zoom=18 + número + enriquecimento com Gazetteer do Perequê e Guarujá)
   if (req.method === 'GET' && pathname === '/api/v1/geo/reverse') {
+    if (rateLimited(req, res, 'geo', 60, 60 * 1000)) return;
     const lat = parseFloat(query.lat);
     const lng = parseFloat(query.lng);
 
@@ -501,6 +657,7 @@ const server = http.createServer(async (req, res) => {
 
   // Busca de endereço / rua / número / CEP (ViaCEP + Gazetteer Guarujá Inteiro + Nominatim OSM)
   if (req.method === 'GET' && pathname === '/api/v1/geo/search') {
+    if (rateLimited(req, res, 'geo', 60, 60 * 1000)) return;
     const q = (query.q || '').trim();
     const houseNumParam = (query.num || '').trim();
 
@@ -665,18 +822,15 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && pathname === '/api/v1/locations') {
     const lat = !isNaN(parseFloat(query.lat)) ? parseFloat(query.lat) : PEREQUE_CENTER.lat;
     const lng = !isNaN(parseFloat(query.lng)) ? parseFloat(query.lng) : PEREQUE_CENTER.lng;
-    const radius = parseFloat(query.radius) || 25000;
+    const radius = Math.min(50000, parseFloat(query.radius) || 25000);
     const domain = query.domain;
     const category = query.category;
     const search = query.search ? query.search.toLowerCase() : '';
 
+    // Poucos pontos por perto? Importa do OpenStreetMap em segundo plano (sem travar a resposta),
+    // no máximo 1 vez a cada 10 min por área e só na região de cobertura.
     const nearbyCount = db.locations.filter(l => calculateDistanceMeters(lat, lng, l.lat, l.lng) <= radius).length;
-    if (nearbyCount < 3) {
-      await Promise.race([
-        fetchRealOsmPoints(lat, lng, radius),
-        new Promise(r => setTimeout(r, 6000))
-      ]);
-    }
+    if (nearbyCount < 3) maybeImportOsmInBackground(lat, lng, radius);
 
     let results = db.locations.map(loc => {
       const distance = calculateDistanceMeters(lat, lng, loc.lat, loc.lng);
@@ -726,20 +880,28 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
-  // Auth: Register
+  // Auth: Cadastro
   if (req.method === 'POST' && pathname === '/api/v1/auth/register') {
+    if (rateLimited(req, res, 'auth', 10, 10 * 60 * 1000)) return;
     try {
-      const { name, email, password } = await parseBody(req);
-      if (!name || !email || !password) return sendJSON(res, 400, { error: 'Campos obrigatórios.' });
-      if (db.users.some(u => u.email.toLowerCase() === email.toLowerCase())) {
-        return sendJSON(res, 409, { error: 'E-mail já cadastrado.' });
-      }
+      const body = await parseBody(req);
+      const name = String(body.name || '').trim();
+      const email = String(body.email || '').trim().toLowerCase();
+      const password = String(body.password || '');
+
+      if (name.length < 2 || name.length > 80) return sendJSON(res, 400, { error: 'Informe seu nome (2 a 80 caracteres).' });
+      if (email.length > 255 || !EMAIL_RE.test(email)) return sendJSON(res, 400, { error: 'Informe um e-mail válido.' });
+      if (password.length < 8 || password.length > 128) return sendJSON(res, 400, { error: 'A senha deve ter de 8 a 128 caracteres.' });
+      if (db.users.some(u => u.email.toLowerCase() === email)) return sendJSON(res, 409, { error: 'E-mail já cadastrado.' });
+
+      const passwordHash = await hashPasswordAsync(password);
+      if (db.users.some(u => u.email.toLowerCase() === email)) return sendJSON(res, 409, { error: 'E-mail já cadastrado.' });
 
       const newUser = {
-        id: 'usr-' + (db.users.length + 1) + '-' + Date.now().toString(36),
-        name: String(name).trim(),
-        email: String(email).trim().toLowerCase(),
-        passwordHash: hashPassword(password),
+        id: 'usr-' + crypto.randomUUID(),
+        name,
+        email,
+        passwordHash,
         provider: 'local',
         googleId: null,
         picture: null,
@@ -748,136 +910,143 @@ const server = http.createServer(async (req, res) => {
       db.users.push(newUser);
       saveDatabase();
 
-      const token = generateJWT({ id: newUser.id, name: newUser.name, email: newUser.email, picture: newUser.picture, provider: 'local' });
-      return sendJSON(res, 201, {
-        status: 'success',
-        token,
-        user: { id: newUser.id, name: newUser.name, email: newUser.email, picture: newUser.picture, provider: 'local' }
-      });
+      const user = publicUser(newUser, 'local');
+      return sendJSON(res, 201, { status: 'success', token: generateJWT(user), user });
     } catch {
       return sendJSON(res, 400, { error: 'Requisição inválida.' });
     }
   }
 
-  // Auth: Login Tradicional (Scrypt com Salt)
+  // Auth: Login (scrypt com salt; migra hashes SHA-256 antigos no primeiro acesso)
   if (req.method === 'POST' && pathname === '/api/v1/auth/login') {
-    try {
-      const { email, password } = await parseBody(req);
-      const user = db.users.find(
-        u => u.email.toLowerCase() === (email || '').trim().toLowerCase() && verifyPassword(password || '', u.passwordHash)
-      );
-      if (!user) return sendJSON(res, 401, { error: 'E-mail ou senha inválidos.' });
-
-      const token = generateJWT({ id: user.id, name: user.name, email: user.email, picture: user.picture, provider: user.provider || 'local' });
-      return sendJSON(res, 200, {
-        status: 'success',
-        token,
-        user: { id: user.id, name: user.name, email: user.email, picture: user.picture, provider: user.provider || 'local' }
-      });
-    } catch {
-      return sendJSON(res, 400, { error: 'Requisição inválida.' });
-    }
-  }
-
-  // Auth: Entrar com Google (Com proteção contra sobrescrita de contas locais protegidas por senha)
-  if (req.method === 'POST' && pathname === '/api/v1/auth/google') {
+    if (rateLimited(req, res, 'auth', 10, 10 * 60 * 1000)) return;
     try {
       const body = await parseBody(req);
-      let googleEmail = '';
-      let googleName = '';
-      let googlePicture = '';
-      let googleSub = '';
-      let isVerifiedOAuthToken = false;
+      const email = String(body.email || '').trim().toLowerCase();
+      const password = String(body.password || '');
+      const found = db.users.find(u => u.email.toLowerCase() === email);
 
-      if (body.accessToken) {
-        const userInfo = await httpsGet('https://www.googleapis.com/oauth2/v3/userinfo', 5000, {
-          'Authorization': 'Bearer ' + body.accessToken
-        });
-        googleEmail = (userInfo.email || '').trim().toLowerCase();
-        googleName = userInfo.name || userInfo.given_name || '';
-        googlePicture = userInfo.picture || '';
-        googleSub = userInfo.sub || '';
-        isVerifiedOAuthToken = Boolean(googleEmail && userInfo.email_verified !== false);
-      } else if (body.credential) {
-        const tokenInfo = await httpsGet(
-          'https://oauth2.googleapis.com/tokeninfo?id_token=' + encodeURIComponent(body.credential),
-          5000
-        );
-        googleEmail = (tokenInfo.email || '').trim().toLowerCase();
-        googleName = tokenInfo.name || tokenInfo.given_name || '';
-        googlePicture = tokenInfo.picture || '';
-        googleSub = tokenInfo.sub || '';
-        isVerifiedOAuthToken = Boolean(googleEmail && tokenInfo.email_verified !== 'false');
+      let ok = false;
+      if (found && found.passwordHash) {
+        ok = await verifyPasswordAsync(password, found.passwordHash);
+      } else {
+        await scryptAsync('x', 'tempo-constante', 64); // iguala o tempo de resposta (não revela se o e-mail existe)
+      }
+      if (!ok) return sendJSON(res, 401, { error: 'E-mail ou senha inválidos.' });
+
+      if (!found.passwordHash.startsWith('scrypt$')) {
+        found.passwordHash = await hashPasswordAsync(password);
+        saveDatabase();
+      }
+
+      const user = publicUser(found);
+      return sendJSON(res, 200, { status: 'success', token: generateJWT(user), user });
+    } catch {
+      return sendJSON(res, 400, { error: 'Requisição inválida.' });
+    }
+  }
+
+  // Auth: Google (token verificado no Google). O modo "demo" só existe em desenvolvimento.
+  if (req.method === 'POST' && pathname === '/api/v1/auth/google') {
+    if (rateLimited(req, res, 'auth', 20, 10 * 60 * 1000)) return;
+    try {
+      const body = await parseBody(req);
+      let profile = null;
+      let provider = 'google';
+
+      if (body.credential || body.accessToken) {
+        if (!GOOGLE_CLIENT_ID) {
+          return sendJSON(res, 503, { error: 'Login com Google não está configurado neste servidor (defina GOOGLE_CLIENT_ID).' });
+        }
+        if (body.credential) {
+          const info = await httpsGetRaw('https://oauth2.googleapis.com/tokeninfo?id_token=' + encodeURIComponent(String(body.credential)), 5000);
+          if (info.aud !== GOOGLE_CLIENT_ID) throw new Error('Token emitido para outro aplicativo.');
+          if (!['accounts.google.com', 'https://accounts.google.com'].includes(info.iss)) throw new Error('Emissor do token inválido.');
+          profile = {
+            email: String(info.email || '').trim().toLowerCase(),
+            name: info.name || info.given_name || '',
+            picture: info.picture || '',
+            sub: info.sub || '',
+            verified: String(info.email_verified) === 'true'
+          };
+        } else {
+          const tokenInfo = await httpsGetRaw('https://oauth2.googleapis.com/tokeninfo?access_token=' + encodeURIComponent(String(body.accessToken)), 5000);
+          if ((tokenInfo.aud || tokenInfo.azp) !== GOOGLE_CLIENT_ID) throw new Error('Token emitido para outro aplicativo.');
+          const ui = await httpsGetRaw('https://www.googleapis.com/oauth2/v3/userinfo', 5000, { Authorization: 'Bearer ' + body.accessToken });
+          profile = {
+            email: String(ui.email || '').trim().toLowerCase(),
+            name: ui.name || ui.given_name || '',
+            picture: ui.picture || '',
+            sub: ui.sub || '',
+            verified: ui.email_verified === true || ui.email_verified === 'true'
+          };
+        }
+        if (!profile.email || !profile.verified) {
+          return sendJSON(res, 403, { error: 'O e-mail da conta Google não está verificado.' });
+        }
       } else if (body.email) {
-        googleEmail = String(body.email).trim().toLowerCase();
-        googleName = String(body.name || googleEmail.split('@')[0]).trim();
-        googlePicture = body.picture || '';
-        googleSub = body.googleId || ('google-' + crypto.createHash('md5').update(googleEmail).digest('hex').slice(0, 12));
-        isVerifiedOAuthToken = false;
+        if (!DEMO_LOGIN_ENABLED) {
+          return sendJSON(res, 403, { error: 'Entrar apenas com e-mail do Google está desativado neste servidor. Use o botão do Google ou e-mail e senha.' });
+        }
+        const demoEmail = String(body.email).trim().toLowerCase();
+        if (demoEmail.length > 255 || !EMAIL_RE.test(demoEmail)) return sendJSON(res, 400, { error: 'Informe um e-mail válido.' });
+        provider = 'demo';
+        profile = {
+          email: demoEmail,
+          name: String(body.name || demoEmail.split('@')[0]).trim().slice(0, 80),
+          picture: '',
+          sub: 'demo-' + crypto.createHash('sha256').update(demoEmail).digest('hex').slice(0, 16),
+          verified: false
+        };
+      } else {
+        return sendJSON(res, 400, { error: 'Credencial do Google não informada.' });
       }
 
-      if (!googleEmail || !googleEmail.includes('@')) {
-        return sendJSON(res, 400, { error: 'Informe um e-mail válido da sua conta do Google.' });
+      if (!profile.name) {
+        profile.name = profile.email.split('@')[0].replace(/[._-]+/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
       }
 
-      if (!googleName) {
-        const prefix = googleEmail.split('@')[0].replace(/[._-]+/g, ' ');
-        googleName = prefix.replace(/\b\w/g, l => l.toUpperCase());
-      }
+      let user = db.users.find(u => u.email.toLowerCase() === profile.email);
 
-      let user = db.users.find(u => u.email.toLowerCase() === googleEmail);
-
-      if (user && user.provider === 'local' && !isVerifiedOAuthToken) {
-        return sendJSON(res, 403, {
-          error: 'Este e-mail pertence a uma conta local protegida por senha. Entre com seu e-mail e senha ou utilize uma conta Google.'
-        });
+      if (user && provider === 'demo' && user.provider !== 'demo') {
+        return sendJSON(res, 403, { error: 'Este e-mail já pertence a uma conta cadastrada. Entre pelo método original dessa conta.' });
       }
 
       if (!user) {
         user = {
-          id: 'usr-google-' + (db.users.length + 1) + '-' + Date.now().toString(36),
-          googleId: googleSub,
-          name: googleName,
-          email: googleEmail,
+          id: 'usr-' + crypto.randomUUID(),
+          googleId: profile.sub,
+          name: profile.name,
+          email: profile.email,
           passwordHash: null,
-          provider: 'google',
-          picture: googlePicture || null,
+          provider,
+          picture: profile.picture || null,
           createdAt: new Date().toISOString()
         };
         db.users.push(user);
       } else {
-        user.name = googleName || user.name;
-        user.googleId = googleSub || user.googleId;
-        if (googlePicture) user.picture = googlePicture;
+        // Token Google verificado: vincula à conta existente (local ou demo) e promove demo -> google
+        if (provider === 'google') {
+          user.googleId = profile.sub || user.googleId;
+          if (user.provider === 'demo') user.provider = 'google';
+        }
+        if (profile.picture) user.picture = profile.picture;
+        if (!user.name) user.name = profile.name;
       }
-
       saveDatabase();
 
-      const tokenPayload = {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        picture: user.picture,
-        provider: 'google'
-      };
-      const token = generateJWT(tokenPayload);
-
-      return sendJSON(res, 200, {
-        status: 'success',
-        token,
-        user: tokenPayload
-      });
+      const publicInfo = publicUser(user, provider === 'demo' ? 'demo' : 'google');
+      return sendJSON(res, 200, { status: 'success', token: generateJWT(publicInfo), user: publicInfo });
     } catch (err) {
       return sendJSON(res, 400, { error: 'Não foi possível autenticar com o Google: ' + (err.message || 'Erro desconhecido') });
     }
   }
 
-  // Reviews (Apenas usuários autenticados; persiste em data.json)
+  // Avaliações (usuário autenticado; 1 por usuário/local/dia; notas obrigatórias de 1 a 5)
   if (req.method === 'POST' && pathname.startsWith('/api/v1/locations/') && pathname.endsWith('/reviews')) {
-    const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : null;
-    const user = verifyJWT(token);
+    const user = getAuthUser(req);
     if (!user) return sendJSON(res, 401, { error: 'Faça login para avaliar este local.' });
+    if (rateLimited(req, res, 'write', 30, 60 * 60 * 1000)) return;
 
     const locationId = pathname.split('/')[4];
     const loc = db.locations.find(l => l.id === locationId);
@@ -885,79 +1054,103 @@ const server = http.createServer(async (req, res) => {
 
     try {
       const body = await parseBody(req);
-      const wait = Math.min(5, Math.max(1, parseInt(body.rating_wait_time, 10) || 5));
-      const access = Math.min(5, Math.max(1, parseInt(body.rating_accessibility, 10) || 5));
-      const care = Math.min(5, Math.max(1, parseInt(body.rating_humanized_care, 10) || 5));
+      const [wait, access, care] = [body.rating_wait_time, body.rating_accessibility, body.rating_humanized_care].map(Number);
+      if ([wait, access, care].some(v => !Number.isInteger(v) || v < 1 || v > 5)) {
+        return sendJSON(res, 400, { error: 'As três notas devem ser números inteiros de 1 a 5.' });
+      }
 
-      const newReview = {
-        id: 'rev-' + Date.now(),
+      const today = todayInBrazil();
+      if (!Array.isArray(loc.reviews)) loc.reviews = [];
+      if (loc.reviews.some(r => r.userId === user.id && r.date === today)) {
+        return sendJSON(res, 409, { error: 'Você já avaliou este local hoje. Volte amanhã para registrar uma nova avaliação.' });
+      }
+
+      loc.reviews.unshift({
+        id: 'rev-' + crypto.randomUUID(),
+        userId: user.id,
         userName: user.name,
         wait,
         access,
         care,
-        comment: String(body.comment || '').trim(),
-        date: new Date().toISOString().split('T')[0]
-      };
+        comment: String(body.comment || '').trim().slice(0, 500),
+        date: today
+      });
 
-      loc.reviews.unshift(newReview);
-      loc.total_reviews += 1;
-      const count = loc.total_reviews;
-      loc.avg_wait_time = parseFloat(((loc.avg_wait_time * (count - 1) + wait) / count).toFixed(1));
-      loc.avg_accessibility = parseFloat(((loc.avg_accessibility * (count - 1) + access) / count).toFixed(1));
-      loc.avg_humanized_care = parseFloat(((loc.avg_humanized_care * (count - 1) + care) / count).toFixed(1));
-      loc.overall_score = parseFloat(((loc.avg_wait_time + loc.avg_accessibility + loc.avg_humanized_care) / 3).toFixed(1));
+      if (KEEP_DEMO_RATINGS) {
+        // Modo demonstração: mantém as notas fictícias do seed e apenas incorpora a nova avaliação
+        loc.total_reviews += 1;
+        const count = loc.total_reviews;
+        loc.avg_wait_time = parseFloat(((loc.avg_wait_time * (count - 1) + wait) / count).toFixed(1));
+        loc.avg_accessibility = parseFloat(((loc.avg_accessibility * (count - 1) + access) / count).toFixed(1));
+        loc.avg_humanized_care = parseFloat(((loc.avg_humanized_care * (count - 1) + care) / count).toFixed(1));
+        loc.overall_score = parseFloat(((loc.avg_wait_time + loc.avg_accessibility + loc.avg_humanized_care) / 3).toFixed(1));
+      } else {
+        recomputeLocationMetrics(loc);
+      }
 
       saveDatabase();
-
       return sendJSON(res, 201, { status: 'success', message: 'Avaliação registrada com sucesso!', location: loc });
     } catch {
       return sendJSON(res, 400, { error: 'Erro ao processar avaliação.' });
     }
   }
 
-  // Reports (Apenas usuários autenticados; persiste em data.json)
+  // Alertas ambientais (usuário autenticado; tipo e coordenadas validados)
   if (req.method === 'POST' && pathname === '/api/v1/reports') {
-    const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : null;
-    const user = verifyJWT(token);
+    const user = getAuthUser(req);
     if (!user) return sendJSON(res, 401, { error: 'Faça login para registrar alertas ambientais.' });
+    if (rateLimited(req, res, 'write', 30, 60 * 60 * 1000)) return;
 
     try {
       const body = await parseBody(req);
+      const title = String(body.title || '').trim();
+      const description = String(body.description || '').trim();
+      const address = String(body.address || 'Localização selecionada no mapa').trim();
       const repLat = parseFloat(body.lat);
       const repLng = parseFloat(body.lng);
+      const reportType = body.report_type || 'foco_dengue';
 
-      if (!body.title || isNaN(repLat) || isNaN(repLng)) {
-        return sendJSON(res, 400, { error: 'Título e coordenadas válidas são obrigatórios.' });
-      }
+      if (title.length < 3 || title.length > 120) return sendJSON(res, 400, { error: 'O título deve ter de 3 a 120 caracteres.' });
+      if (!REPORT_TYPES.includes(reportType)) return sendJSON(res, 400, { error: 'Tipo de alerta inválido.' });
+      if (description.length > 1000) return sendJSON(res, 400, { error: 'A descrição deve ter no máximo 1000 caracteres.' });
+      if (address.length > 255) return sendJSON(res, 400, { error: 'O endereço deve ter no máximo 255 caracteres.' });
+      if (!inCoverage(repLat, repLng)) return sendJSON(res, 422, { error: 'O local do alerta está fora da área de cobertura (Guarujá/SP).' });
 
       const newReport = {
-        id: 'rep-' + Date.now(),
-        title: String(body.title).trim(),
-        report_type: body.report_type || 'foco_dengue',
-        description: String(body.description || '').trim(),
-        address: String(body.address || 'Localização selecionada no mapa').trim(),
+        id: 'rep-' + crypto.randomUUID(),
+        title,
+        report_type: reportType,
+        description,
+        address,
         lat: repLat,
         lng: repLng,
         status: 'pending',
-        date: new Date().toISOString().split('T')[0],
+        date: todayInBrazil(),
         reporterName: user.name
       };
 
       db.reports.unshift(newReport);
       saveDatabase();
-
       return sendJSON(res, 201, { status: 'success', report: newReport });
     } catch {
       return sendJSON(res, 400, { error: 'Erro ao processar alerta ambiental.' });
     }
   }
 
-  // Seed OSM manual
+  // Importação sob demanda de pontos do OpenStreetMap (exige login; limitada em área e frequência)
   if (req.method === 'POST' && pathname === '/api/v1/seed/osm-live') {
+    const user = getAuthUser(req);
+    if (!user) return sendJSON(res, 401, { error: 'Entre na sua conta para buscar novos pontos no OpenStreetMap.' });
+    if (rateLimited(req, res, 'osm', 5, 10 * 60 * 1000)) return;
     try {
-      const { lat, lng, radius } = await parseBody(req);
-      const count = await fetchRealOsmPoints(parseFloat(lat), parseFloat(lng), parseFloat(radius) || 8000);
+      const body = await parseBody(req);
+      const lat = parseFloat(body.lat);
+      const lng = parseFloat(body.lng);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng) || calculateDistanceMeters(lat, lng, GUARUJA_CENTER.lat, GUARUJA_CENTER.lng) > 60000) {
+        return sendJSON(res, 422, { error: 'A busca está limitada à região do Guarujá/Baixada Santista.' });
+      }
+      const radius = Math.min(10000, Math.max(1000, parseFloat(body.radius) || 8000));
+      const count = await fetchRealOsmPoints(lat, lng, radius);
       return sendJSON(res, 200, {
         status: 'success',
         message: `${count} novos pontos reais foram importados do OpenStreetMap no seu entorno!`
@@ -970,13 +1163,21 @@ const server = http.createServer(async (req, res) => {
   sendJSON(res, 404, { error: 'Recurso não encontrado.' });
 });
 
+function shutdown() {
+  flushDatabase();
+  process.exit(0);
+}
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
+
 server.listen(PORT, () => {
   console.log(`\n========================================================================`);
   console.log(`🌿 CuidAção — SAÚDE ÚNICA (ONE HEALTH) • GUARUJÁ/SP (INCLUINDO PEREQUÊ)`);
   console.log(`========================================================================`);
   console.log(`📍 Aplicação Web & PWA: http://localhost:${PORT}`);
   console.log(`💾 Persistência Automática: server/data.json`);
-  console.log(`📂 Estrutura Modular: /html, /css, /js e /server`);
+  console.log(`📂 Estrutura: /public (site/app) e /server (API)`);
+  console.log(`🔐 Login demo (sem Google real): ${DEMO_LOGIN_ENABLED ? 'ATIVADO (apenas desenvolvimento)' : 'desativado'}`);
   console.log(`========================================================================\n`);
 });
 

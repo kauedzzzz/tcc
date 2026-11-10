@@ -5,9 +5,9 @@
 cd "$(dirname "$0")"
 
 if command -v node >/dev/null 2>&1; then
-  exec node server.js
+  exec node server/server.js
 elif [ -n "$FLATPAK_ID" ] && command -v flatpak-spawn >/dev/null 2>&1; then
-  exec flatpak-spawn --host --directory="$PWD" node server.js
+  exec flatpak-spawn --host --directory="$PWD" node server/server.js
 else
   echo "Node.js não encontrado. Instale com: sudo pacman -S nodejs npm" >&2
   exit 1

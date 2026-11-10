@@ -2,11 +2,18 @@
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>CuidAção - Saúde Única (One Health) • Guarujá/SP (Perequê & Todos os Bairros)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>CuidAção - Saúde Única (One Health) • Guarujá/SP</title>
+  <meta name="description" content="Mapa comunitário de unidades de saúde, farmácias e ecopontos do Guarujá/SP, com avaliações e alertas ambientais.">
   
-  <link rel="manifest" href="/manifest.json">
+  <link rel="manifest" href="../public/manifest.json">
   <meta name="theme-color" content="#10B981">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="CuidAção">
+  <link rel="icon" type="image/png" sizes="192x192" href="../public/icons/icon-192.png">
+  <link rel="apple-touch-icon" href="../public/icons/apple-touch-icon.png">
 
   <!-- Tailwind CSS via CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
@@ -26,7 +33,7 @@
   <!-- ==================================================================== -->
   <!-- CONTAINER FLUTUANTE DE NOTIFICAÇÕES TOAST -->
   <!-- ==================================================================== -->
-  <div id="toast-container" class="fixed top-4 right-4 z-[5000] flex flex-col gap-2.5 max-w-sm w-[92vw] pointer-events-none"></div>
+  <div id="toast-container" class="app-safe-top-right fixed top-4 right-4 z-[5000] flex flex-col gap-2.5 max-w-sm w-[92vw] pointer-events-none"></div>
 
   <!-- ==================================================================== -->
   <!-- TELA DE INÍCIO MINIMALISTA (HERO CARD CENTRALIZADO - OPÇÃO A) -->
@@ -68,6 +75,15 @@
           <span>Começar a Explorar o Mapa</span>
         </button>
       </div>
+
+      <button
+          type="button"
+          id="btn-install-app"
+          onclick="installApp()"
+          class="hidden mt-3 w-full py-2.5 px-4 rounded-2xl text-xs font-extrabold bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100 transition"
+        >
+          📲 Instalar o app CuidAção no celular
+      </button>
 
       <!-- Divisória Sutil para Ações Secundárias Discretas -->
       <div class="relative flex py-4 items-center">
@@ -244,10 +260,14 @@
         <!-- Lista de Contas Google Salvas no Navegador -->
         <div id="saved-google-accounts" class="mt-4 space-y-1.5 max-h-40 overflow-y-auto"></div>
 
+        <p id="google-unavailable-msg" class="hidden mt-4 p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-xs font-semibold leading-relaxed">
+          O login com Google não está configurado neste servidor. Use o acesso com e-mail e senha.
+        </p>
+
         <!-- Formulário para Entrar com a Própria Conta do Google -->
         <form id="google-direct-form" onsubmit="handleGoogleDirectSubmit(event)" class="mt-4 pt-3 border-t border-gray-100 space-y-3">
           <p class="text-[11px] font-bold text-gray-600 flex items-center gap-1.5">
-            <span>👤</span> Usar sua conta do Google (@gmail.com ou institucional):
+            <span>👤</span> Modo demonstração (sem verificação de e-mail — apenas desenvolvimento):
           </p>
 
           <div>
@@ -291,30 +311,7 @@
           </div>
         </form>
 
-        <!-- Opção Avançada OAuth Client ID (Caso o desenvolvedor queira conectar ao Google Cloud Console) -->
-        <details class="mt-4 pt-2 border-t border-gray-100 text-[11px] text-gray-400">
-          <summary class="cursor-pointer hover:text-gray-600 font-semibold">⚙️ Configurar Google Cloud OAuth Client ID (Opcional)</summary>
-          <div class="mt-2 space-y-2 text-gray-600">
-            <p class="text-[10px] leading-relaxed">
-              Caso possua um <code>CLIENT_ID</code> OAuth 2.0 do Google Cloud Console autorizado para <code>http://localhost:3000</code>, informe abaixo para abrir o popup externo <code>accounts.google.com</code>:
-            </p>
-            <div class="flex gap-1.5">
-              <input
-                type="text"
-                id="google-custom-client-id"
-                placeholder="xxxx.apps.googleusercontent.com"
-                class="flex-1 p-1.5 text-[11px] border border-gray-300 rounded-lg focus:outline-none focus:border-blue-500"
-              >
-              <button
-                type="button"
-                onclick="saveCustomGoogleClientId()"
-                class="px-2.5 py-1.5 bg-gray-800 hover:bg-black text-white text-[10px] font-bold rounded-lg transition"
-              >
-                Usar OAuth
-              </button>
-            </div>
-          </div>
-        </details>
+        
       </div>
     </div>
   </div>
@@ -322,7 +319,7 @@
   <!-- ==================================================================== -->
   <!-- BARRA SUPERIOR DE FILTROS & AÇÕES (FLUTUANTE) -->
   <!-- ==================================================================== -->
-  <header class="absolute top-4 left-4 right-4 z-[1000] flex flex-col md:flex-row items-stretch md:items-center justify-between gap-2.5 pointer-events-none">
+  <header class="app-header absolute top-4 left-4 right-4 z-[1000] flex flex-col md:flex-row items-stretch md:items-center justify-between gap-2.5 pointer-events-none">
     
     <div class="bg-white/95 backdrop-blur-md shadow-xl rounded-2xl p-2 flex flex-wrap items-center gap-1.5 border border-gray-200/80 pointer-events-auto">
       
@@ -412,16 +409,36 @@
         ♻️ Sustentabilidade
       </button>
 
-      <!-- Input de Busca Rápida -->
-      <div class="relative flex-1 min-w-[130px]">
-        <input 
-          type="text" 
-          id="search-input" 
-          placeholder="Buscar Perequê, UBS, UPA, ecoponto..." 
-          oninput="handleSearch(this.value)"
-          class="w-full bg-gray-100 focus:bg-white text-xs pl-7 pr-3 py-1.5 rounded-xl border border-transparent focus:border-emerald-500 focus:outline-none transition"
-        >
-        <span class="absolute left-2.5 top-2 text-gray-400 text-xs">🔍</span>
+      <!-- Barra de Pesquisa com Suporte a CEP (ViaCEP + Nominatim) e Filtro Rápido -->
+      <div class="map-search-wrapper relative flex-1 min-w-[210px] sm:min-w-[260px]">
+        <div class="map-search-bar flex items-center bg-gray-100 focus-within:bg-white rounded-xl border border-transparent focus-within:border-emerald-500 transition overflow-hidden">
+          <span class="pl-2.5 pr-1 text-gray-400 text-xs select-none">🔍</span>
+          <input 
+            type="text" 
+            id="search-input" 
+            placeholder="Digite um CEP (ex: 01001-000) ou busque UBS..." 
+            oninput="handleSearch(this.value)"
+            onkeydown="if(event.key==='Enter'){event.preventDefault();handleCepSearchSubmit();}"
+            aria-label="Pesquisar por CEP ou unidade"
+            class="map-search-input w-full bg-transparent text-xs px-1.5 py-1.5 focus:outline-none text-gray-800 placeholder-gray-400"
+          >
+          <button
+            type="button"
+            id="btn-cep-search"
+            onclick="handleCepSearchSubmit()"
+            title="Buscar CEP no mapa (ou pressione Enter)"
+            class="map-search-btn px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white text-[11px] font-bold transition shrink-0 flex items-center gap-1"
+          >
+            <span>Buscar</span>
+          </button>
+        </div>
+        <!-- Mensagem de feedback amigável abaixo da barra de pesquisa -->
+        <div
+          id="cep-search-feedback"
+          role="status"
+          aria-live="polite"
+          class="cep-feedback-banner hidden"
+        ></div>
       </div>
 
       <!-- Seletor de Raio (Guarujá Inteiro 25 km selecionado por padrão) -->
@@ -494,7 +511,7 @@
   <!-- ==================================================================== -->
   <!-- CONTROLES SUAVES DE CAMADA SATÉLITE, ZOOM E VISÃO GERAL (+ / - / ILHA) -->
   <!-- ==================================================================== -->
-  <div class="absolute bottom-24 right-6 z-[1000] flex flex-col items-end gap-1.5">
+  <div class="app-map-controls absolute bottom-24 right-6 z-[1000] flex flex-col items-end gap-1.5">
     <button
       onclick="toggleMapStyle()"
       id="btn-map-style-floating"
@@ -519,7 +536,7 @@
   <!-- ==================================================================== -->
   <button 
     onclick="refreshUserLocation()" 
-    class="absolute bottom-6 right-6 z-[1000] bg-white text-gray-800 w-11 h-11 rounded-2xl shadow-2xl border border-gray-200 hover:bg-gray-50 transition active:scale-95 flex items-center justify-center group"
+    class="app-locate-btn absolute bottom-6 right-6 z-[1000] bg-white text-gray-800 w-11 h-11 rounded-2xl shadow-2xl border border-gray-200 hover:bg-gray-50 transition active:scale-95 flex items-center justify-center group"
     title="Centralizar na minha localização no Bairro do Perequê / GPS"
   >
     <span class="text-xl group-hover:scale-125 transition-transform">🎯</span>
@@ -535,7 +552,7 @@
   <!-- ==================================================================== -->
   <aside 
     id="sidebar" 
-    class="hidden fixed bottom-0 left-0 md:top-0 md:right-0 md:left-auto w-full md:w-[420px] max-h-[86vh] md:max-h-screen md:h-screen bg-white z-[1002] shadow-2xl p-6 overflow-y-auto rounded-t-3xl md:rounded-none flex-col justify-between border-t md:border-t-0 md:border-l border-gray-200 transition-all"
+    class="app-sidebar hidden fixed bottom-0 left-0 md:top-0 md:right-0 md:left-auto w-full md:w-[420px] max-h-[86vh] md:max-h-screen md:h-screen bg-white z-[1002] shadow-2xl p-6 overflow-y-auto rounded-t-3xl md:rounded-none flex-col justify-between border-t md:border-t-0 md:border-l border-gray-200 transition-all"
   >
     <div>
       <div class="flex justify-between items-start">
@@ -940,6 +957,7 @@
   </div>
 
   <!-- Script Principal da Aplicação (Pasta JS) -->
+  <script src="../js/config.js"></script>
   <script src="../js/app.js"></script>
 </body>
 </html>

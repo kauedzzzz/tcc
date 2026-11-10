@@ -12,7 +12,10 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const DATA_FILE_PATH = path.join(__dirname, 'data.json');
+// DATA_DIR permite apontar para um disco persistente em hospedagens (Render, Railway, Fly...)
+const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : __dirname;
+try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch { /* ignora */ }
+const DATA_FILE_PATH = path.join(DATA_DIR, 'data.json');
 
 // ============================================================================
 // CRIPTOGRAFIA DE SENHAS COM SALT (CRYPTO.SCRYPTSYNC + TIMING-SAFE EQUAL)
@@ -139,7 +142,20 @@ function findNearestLocalPlace(lat, lng) {
 // ============================================================================
 // SEED COMPLETO DO MUNICÍPIO DO GUARUJÁ/SP (INCLUINDO PEREQUÊ E TODOS OS BAIRROS)
 // ============================================================================
+// Em produção NÃO se cria o usuário demo (senha fixa conhecida) nem os alertas de demonstração.
+// Para incluí-los (apresentação do TCC): SEED_DEMO_DATA=1
+const SEED_DEMO_DATA = process.env.NODE_ENV !== 'production' || process.env.SEED_DEMO_DATA === '1';
+
 function getInitialSeedData() {
+  const seed = buildSeedData();
+  if (!SEED_DEMO_DATA) {
+    seed.users = [];
+    seed.reports = [];
+  }
+  return seed;
+}
+
+function buildSeedData() {
   return {
     users: [
       {
@@ -1236,11 +1252,38 @@ function loadDatabase() {
   return seed;
 }
 
-const db = loadDatabase();
+// ============================================================================
+// MÉTRICAS DE AVALIAÇÃO: SEMPRE DERIVADAS DAS AVALIAÇÕES REAIS (reviews[])
+// Evita notas/contagens "fantasmas" (ex.: "64 avaliações" com só 2 registradas).
+// Para manter os números fictícios do seed em apresentações: KEEP_DEMO_RATINGS=1
+// ============================================================================
+function recomputeLocationMetrics(loc) {
+  const reviews = Array.isArray(loc.reviews) ? loc.reviews : [];
+  const n = reviews.length;
+  const avg = (key) => n ? Math.round((reviews.reduce((a, r) => a + (Number(r[key]) || 0), 0) / n) * 10) / 10 : 0;
+  loc.total_reviews = n;
+  loc.avg_wait_time = avg('wait');
+  loc.avg_accessibility = avg('access');
+  loc.avg_humanized_care = avg('care');
+  loc.overall_score = n ? Math.round(((loc.avg_wait_time + loc.avg_accessibility + loc.avg_humanized_care) / 3) * 10) / 10 : 0;
+  return loc;
+}
 
-function saveDatabase() {
+const db = loadDatabase();
+if (process.env.KEEP_DEMO_RATINGS !== '1') {
+  db.locations.forEach(l => { if (!Array.isArray(l.reviews)) l.reviews = []; recomputeLocationMetrics(l); });
+}
+
+// ============================================================================
+// GRAVAÇÃO ATÔMICA E AGRUPADA (debounce) — evita corromper data.json em queda
+// de energia e evita regravar o arquivo inteiro a cada requisição
+// ============================================================================
+let saveTimer = null;
+function writeDatabaseNow() {
+  const tmp = DATA_FILE_PATH + '.tmp';
   try {
-    fs.writeFileSync(DATA_FILE_PATH, JSON.stringify(db, null, 2), 'utf8');
+    fs.writeFileSync(tmp, JSON.stringify(db, null, 2), 'utf8');
+    fs.renameSync(tmp, DATA_FILE_PATH);
     return true;
   } catch (err) {
     console.error('❌ Erro ao persistir data.json:', err.message);
@@ -1248,9 +1291,22 @@ function saveDatabase() {
   }
 }
 
+function saveDatabase() {
+  if (saveTimer) return true;
+  saveTimer = setTimeout(() => { saveTimer = null; writeDatabaseNow(); }, 250);
+  return true;
+}
+
+function flushDatabase() {
+  if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+  return writeDatabaseNow();
+}
+
 module.exports = {
   db,
   saveDatabase,
+  flushDatabase,
+  recomputeLocationMetrics,
   PEREQUE_CENTER,
   GUARUJA_CENTER,
   GUARUJA_PLACES,

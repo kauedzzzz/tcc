@@ -1,0 +1,13 @@
+{
+  "appId": "br.com.cuidacao.app",
+  "appName": "CuidAção",
+  "webDir": "public",
+  "backgroundColor": "#064E3B",
+  "server": {
+    "androidScheme": "https"
+  },
+  "android": {
+    "allowMixedContent": false
+  }
+}
+
