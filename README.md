@@ -1,91 +1,159 @@
 # CuidAção — Saúde Única (One Health) • Guarujá/SP
 
-Mapa comunitário de unidades de saúde, farmácias, ecopontos e alertas ambientais do Guarujá/SP.
-Funciona como **site**, como **app instalável (PWA)** e pode ser empacotado como **app Android/iOS** (Capacitor).
+Plataforma comunitária de mapeamento geoespacial voltada à **Saúde Pública e Sustentabilidade** no município de **Guarujá/SP**, baseada no conceito de **Saúde Única (One Health)**.
 
-> A lista completa do que foi encontrado e corrigido está em **[ANALISE.md](ANALISE.md)**.
+O projeto funciona como **aplicação web**, **PWA instalável** (com suporte a cache e funcionamento offline) e pode ser empacotado como **aplicativo nativo Android/iOS** utilizando o **Capacitor**.
 
-## 1. Rodar no computador
+---
+
+## Principais Funcionalidades
+
+- **Mapa Interativo (Leaflet):** Visualização de unidades de saúde, farmácias, ecopontos e alertas ambientais no Guarujá/SP.
+- **GPS em Tempo Real (`public/js/map/live-gps.js`):** Rastreamento de alta precisão via `navigator.geolocation.watchPosition()`, com animação suave de marcador, pausa automática em segundo plano para economia de bateria e retomada automática ao retornar ou conceder permissão.
+- **Camada de Farmácias e Farmácia Popular (`public/js/map/pharmacies-data.js` e `pharmacy-layer.js`):** Mapeamento de farmácias e drogarias locais distribuídas pelos bairros do Guarujá/SP, com destaque visual (selo **FP**) para participantes do *Programa Farmácia Popular*, cálculo de distância e atalho de rota (*Como chegar*).
+- **Busca por Endereço e CEP:** Geocodificação direta e reversa integrada à API (`/api/v1/geo/search`, `/api/v1/geo/reverse`, `/api/v1/geo/ip`).
+- **Comunidade e Alertas (`public/comunidade.html`):** Página dedicada para visualização e registro de alertas ambientais e comunitários.
+- **Avaliações de Locais:** Usuários autenticados podem avaliar unidades e serviços com notas e comentários.
+- **Autenticação Segura:** Cadastro e login por e-mail/senha com JWT, suporte opcional a login com Google (`GOOGLE_CLIENT_ID`) e modo demo configurável para desenvolvimento.
+- **PWA Offline-First (`public/sw.js`):** Service Worker (`v6`) com cache de shell da aplicação, cache limitado de tiles do mapa e estratégia *network-first* com fallback offline para a API.
+
+---
+
+## Pré-requisitos
+
+- **Node.js 18+** (o servidor utiliza apenas módulos nativos do Node, sem dependências externas obrigatórias para rodar localmente).
+- Para usar arquivo `.env` nativamente com `--env-file`: **Node.js 20.6+**.
+
+---
+
+## Como Executar Localmente
 
 ```bash
-npm start            # http://localhost:3000   (Node 18+; não há dependências para instalar)
-# ou: ./run.sh
+# 1. Entre na pasta do projeto
+cd /caminho/para/tcc
+
+# 2. Inicie o servidor (http://localhost:3000)
+npm start
 ```
 
-Em desenvolvimento, sem `GOOGLE_CLIENT_ID`, o login "demo" por e-mail fica ligado (aparece avisado no modal).
-Em produção ele fica **desligado** (veja a tabela abaixo).
+Outras opções de execução:
 
-## 2. Estrutura
-
-```
-server/            API Node (server.js), persistência (database.js) e data.json (criado no 1º acesso)
-public/            Tudo que o navegador/app carrega
-  index.html  css/styles.css  js/app.js  js/config.js
-  manifest.json  sw.js  icons/
-database/schema.sql  Modelo alvo PostgreSQL + PostGIS (o backend atual usa data.json)
-capacitor.config.json  Configuração do app nativo
+```bash
+npm run dev          # Inicia com --watch (reinicia automaticamente ao editar o servidor)
+npm run start:env    # Carrega variáveis do arquivo .env (Node 20.6+)
+./run.sh             # Script auxiliar de inicialização
 ```
 
-## 3. Variáveis de ambiente (veja `.env.example`)
+> **Nota de desenvolvimento:** Quando `GOOGLE_CLIENT_ID` não está definido em ambiente de desenvolvimento, o login demo por e-mail permanece habilitado para facilitar testes. Em produção (`NODE_ENV=production`), ele é desabilitado por padrão.
 
-| Variável | Para que serve |
+---
+
+## Estrutura do Projeto
+
+```text
+.
+├── server/
+│   ├── server.js            # Servidor HTTP nativo, API REST v1 e entrega de arquivos estáticos
+│   ├── database.js          # Camada de persistência em JSON (data.json) e seed inicial
+│   ├── schema.sql           # Schema SQL de referência
+│   └── data.json            # Banco de dados local em JSON (gerado/atualizado em runtime)
+├── public/
+│   ├── index.html           # Interface principal (mapa e painel)
+│   ├── comunidade.html      # Página de comunidade e alertas ambientais
+│   ├── manifest.json        # Manifesto PWA
+│   ├── sw.js                # Service Worker (v6) para cache e suporte offline
+│   ├── css/
+│   │   └── styles.css       # Estilos da aplicação
+│   ├── js/
+│   │   ├── app.js           # Lógica principal do frontend
+│   │   ├── config.js        # Configuração de URL da API (web vs Capacitor)
+│   │   └── map/
+│   │       ├── live-gps.js         # Módulo de GPS em tempo real e animação do marcador
+│   │       ├── pharmacies-data.js  # Dados georreferenciados das farmácias do Guarujá/SP
+│   │       └── pharmacy-layer.js   # Camada Leaflet e popups de farmácias
+│   └── icons/               # Ícones do PWA e app nativo
+├── database/
+│   └── schema.sql           # Modelo alvo para PostgreSQL + PostGIS
+├── capacitor.config.json    # Configuração do Capacitor (br.com.cuidacao.app)
+├── package.json             # Metadados e scripts npm
+├── .env.example             # Modelo de variáveis de ambiente
+└── run.sh                   # Script de inicialização
+```
+
+---
+
+## Variáveis de Ambiente
+
+Copie `.env.example` para `.env` e ajuste conforme o ambiente:
+
+| Variável | Descrição |
 |---|---|
-| `JWT_SECRET` | **Obrigatória em produção.** Em desenvolvimento é gerada e guardada em `server/.jwt-secret`. |
-| `GOOGLE_CLIENT_ID` | Ativa o login Google real (o servidor valida o token e o `aud`). |
-| `ALLOW_DEMO_LOGIN` | `1` liga o login só por e-mail (não verifica o dono do e-mail). Só para demonstração. |
-| `ALLOWED_ORIGINS` | Origens que podem chamar a API de outro domínio (o app nativo). Já inclui as do Capacitor. |
-| `DATA_DIR` | Pasta do `data.json`. Em hospedagem, aponte para um **disco persistente**. |
-| `TRUST_PROXY` | `1` atrás de proxy/CDN, para o limite de requisições enxergar o IP real. |
-| `SEED_DEMO_DATA` | `1` cria em produção o usuário demo e alertas de demonstração (em desenvolvimento já são criados). |
-| `KEEP_DEMO_RATINGS` | `1` mantém as notas fictícias do seed (apresentações). Padrão: notas só das avaliações reais. |
+| `JWT_SECRET` | **Obrigatória em produção.** Chave para assinatura dos tokens JWT. Em desenvolvimento, é gerada automaticamente em `server/.jwt-secret`. |
+| `GOOGLE_CLIENT_ID` | Habilita o login real com Google (o servidor valida o token e o campo `aud`). |
+| `ALLOW_DEMO_LOGIN` | `1` habilita o login simplificado por e-mail (apenas para demonstração). |
+| `ALLOWED_ORIGINS` | Origens autorizadas no CORS (já inclui as origens padrão do Capacitor). |
+| `DATA_DIR` | Diretório onde o `data.json` será salvo. Em produção, aponte para um **volume/disco persistente**. |
+| `TRUST_PROXY` | `1` quando atrás de proxy reverso/CDN (Render, Railway, Nginx), garantindo leitura correta do IP no rate limit. |
+| `SEED_DEMO_DATA` | `1` cria usuário e alertas de demonstração em produção (em desenvolvimento já são criados). |
+| `KEEP_DEMO_RATINGS` | `1` mantém as notas fictícias do seed inicial (útil em apresentações). |
 
-Com Node 20.6+: copie `.env.example` para `.env` e rode `npm run start:env`.
+---
 
-## 4. Publicar o servidor
+## Endpoints da API (`v1`)
 
-PWA e GPS exigem **HTTPS**. Qualquer hospedagem Node serve (Render, Railway, Fly.io, VPS):
-comando de início `npm start`, defina `NODE_ENV=production`, `JWT_SECRET`, `DATA_DIR` (disco persistente)
-e `TRUST_PROXY=1`. Abra a URL publicada no celular:
+| Método | Rota | Descrição |
+|---|---|---|
+| `GET` | `/api/v1/health` | Status de saúde do servidor |
+| `GET` | `/api/v1/locations` | Lista locais (unidades de saúde, farmácias, ecopontos) |
+| `GET` | `/api/v1/locations/:id` | Detalhes de um local específico |
+| `POST` | `/api/v1/locations/:id/reviews` | Registra avaliação para um local (requer autenticação) |
+| `GET` | `/api/v1/reports` | Lista alertas ambientais/comunitários |
+| `POST` | `/api/v1/reports` | Cria um novo alerta (requer autenticação) |
+| `GET` | `/api/v1/geo/search` | Busca de endereço/CEP |
+| `GET` | `/api/v1/geo/reverse` | Geocodificação reversa por latitude/longitude |
+| `GET` | `/api/v1/geo/ip` | Localização aproximada por IP |
+| `GET` | `/api/v1/auth/google/config` | Configuração pública do login Google |
+| `POST` | `/api/v1/auth/register` | Cadastro de usuário |
+| `POST` | `/api/v1/auth/login` | Login por e-mail e senha |
+| `POST` | `/api/v1/auth/google` | Login via token Google |
+| `POST` | `/api/v1/seed/osm-live` | Atualização/seed de dados |
 
-- **Android (Chrome):** botão "Instalar o app CuidAção" na tela inicial do site (ou menu ⋮ → Instalar app).
-- **iPhone (Safari):** Compartilhar → Adicionar à Tela de Início.
+---
 
-O app abre em tela cheia, com ícone próprio, e mostra os últimos dados carregados quando fica sem internet.
+## Publicação em Produção e PWA
 
-## 5. Gerar o app Android/iOS (Capacitor)
+Recursos como **Geolocalização (GPS)** e **Service Worker (PWA)** exigem **HTTPS**.
 
-1. Publique a API (passo 4) e coloque a URL em `public/js/config.js`:
-   `apiBase: 'https://SEU-SERVIDOR.com'` (sem barra no final).
-2. Instale o Capacitor e crie os projetos nativos:
+1. Publique o projeto em uma hospedagem Node.js (Render, Railway, Fly.io ou VPS) usando `npm start`.
+2. Configure `NODE_ENV=production`, `JWT_SECRET`, `DATA_DIR` (disco persistente) e `TRUST_PROXY=1`.
+3. Acesse a URL HTTPS pelo celular:
+   - **Android (Chrome):** toque em *"Instalar o app CuidAção"* ou no menu `⋮` → *Instalar app*.
+   - **iOS (Safari):** toque em *Compartilhar* → *Adicionar à Tela de Início*.
+
+---
+
+## Empacotamento Nativo (Android / iOS com Capacitor)
+
+1. Publique a API e configure a URL base em `public/js/config.js`:
+   ```js
+   apiBase: 'https://SEU-SERVIDOR.com' // sem barra no final
+   ```
+2. Instale o Capacitor e adicione as plataformas:
    ```bash
    npm i -D @capacitor/core @capacitor/cli @capacitor/android @capacitor/ios @capacitor/app
-   npx cap add android      # e/ou: npx cap add ios  (iOS exige Mac + Xcode)
+   npm run cap:add:android   # e/ou npm run cap:add:ios (exige macOS + Xcode)
    ```
-3. **Permissão de localização**
-   - Android: em `android/app/src/main/AndroidManifest.xml` adicione
-     `ACCESS_FINE_LOCATION` e `ACCESS_COARSE_LOCATION` (`<uses-permission .../>`).
-   - iOS: em `ios/App/App/Info.plist` adicione `NSLocationWhenInUseUsageDescription`
-     (ex.: "Usamos sua localização para mostrar unidades de saúde próximas").
-4. Ícone e splash: crie `assets/icon-only.png` (copie `public/icons/icon-1024-source.png`) e rode
-   `npm i -D @capacitor/assets && npx capacitor-assets generate` (veja a documentação do pacote).
-5. `npx cap sync` → `npx cap open android` → no Android Studio: *Build > Build APK(s)*.
-   Troque o `appId` em `capacitor.config.json` (`br.com.cuidacao.app`) pelo seu.
+3. **Permissões de localização:**
+   - **Android (`android/app/src/main/AndroidManifest.xml`):** adicione `ACCESS_FINE_LOCATION` e `ACCESS_COARSE_LOCATION`.
+   - **iOS (`ios/App/App/Info.plist`):** adicione `NSLocationWhenInUseUsageDescription`.
+4. **Ícones e Splash Screen (opcional):** copie `public/icons/icon-1024-source.png` para `assets/icon-only.png` e gere os assets com `@capacitor/assets`.
+5. **Sincronizar e gerar build:**
+   ```bash
+   npm run cap:sync
+   npm run cap:open:android
+   ```
+   No Android Studio, utilize **Build > Build APK(s)**. Ajuste o `appId` em `capacitor.config.json` (`br.com.cuidacao.app`) se desejar publicar em loja.
 
-O botão "voltar" do Android já fecha modal → painel → modo de marcação → tela inicial, nessa ordem.
-
-### Limitações conhecidas do app nativo
-- **Login com Google no app:** o Google bloqueia o login web dentro de WebView. No app, o acesso é por
-  e-mail e senha. Para Google nativo é preciso um plugin (ex.: login nativo do Google para Capacitor) — não incluído.
-- O app carrega Tailwind e Leaflet de CDN (precisa de internet na 1ª abertura; depois o cache ajuda).
-  Para uso 100% offline/loja, compile o Tailwind e copie o Leaflet para `public/` (ver ANALISE.md).
-- Os mapas usam servidores públicos de tiles (OpenStreetMap/Esri). Para app publicado em loja, use um
-  provedor com plano apropriado (MapTiler, Stadia, Mapbox...) — os servidores públicos limitam uso intenso.
-
-## 6. O que foi e o que não foi testado
-
-- **Testado (automaticamente, no servidor):** cadastro, login, limite de tentativas, bloqueio de tomada de
-  conta via Google, avaliações (notas obrigatórias, duplicadas), alertas (tipo/área), CORS, body gigante,
-  path traversal, entrega dos arquivos do site/PWA.
-- **Verificado estaticamente:** sintaxe do `app.js`/`server.js`; todos os IDs e `onclick` do HTML têm função/elemento correspondente.
-- **NÃO testado:** o visual e o comportamento em navegador/celular reais (não havia navegador disponível),
-  o build do APK/IPA e o login Google real (exige seu `GOOGLE_CLIENT_ID`). Teste em um celular antes de apresentar.
+### Observações sobre o App Nativo
+- **Login com Google em WebView:** o Google bloqueia fluxo OAuth web dentro de WebViews. No app empacotado, utilize login por e-mail/senha ou integre um plugin nativo de Google Sign-In para Capacitor.
+- **Tiles de mapa e CDNs:** o frontend carrega Leaflet/Tailwind via CDN na primeira abertura (com cache posterior pelo Service Worker) e utiliza tiles públicos (OpenStreetMap/Esri). Para distribuição em grande escala em lojas, considere hospedar os assets localmente e utilizar um provedor de tiles com chave de API.
