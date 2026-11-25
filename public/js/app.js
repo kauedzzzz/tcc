@@ -35,8 +35,26 @@ let userMarker = null;
 let cepHighlightMarker = null;
 let cepFeedbackTimer = null;
 let accuracyCircle = null;
-let geoWatchId = null;
 let pickLocationMode = false; // false | 'user' | 'report'
+
+// GPS em tempo real (módulo js/map/live-gps.js)
+const LIVE_GPS_MAX_ACCURACY_M = 300;            // leituras piores (IP/wi-fi) não movem o pino
+const LIVE_GPS_MAX_DIST_FROM_PEREQUE_M = 30000; // fora do Guarujá o pino não é movido
+const LIVE_GPS_CONTEXT_MIN_MOVE_M = 150;        // endereço/locais só são recarregados após andar 150 m...
+const LIVE_GPS_CONTEXT_MIN_INTERVAL_MS = 30000; // ...e no máximo a cada 30 s (poupa API e Nominatim)
+let liveGpsTracker = null;
+let liveGpsFollow = true;            // false quando o usuário fixa a posição manualmente (arrastar/CEP/clique)
+let liveGpsHasFirstFix = false;
+let liveGpsCenterOnNextFix = false;
+let liveGpsLastAccepted = null;      // última leitura válida { lat, lng, accuracy, timestamp }
+let liveGpsLastContext = null;       // { lat, lng, at } da última recarga de endereço/locais
+const liveGpsNoticeAt = {};          // controle anti-spam dos avisos
+let locationContextSeq = 0;
+
+// Camada de farmácias (módulos js/map/pharmacies-data.js e js/map/pharmacy-layer.js)
+const STORAGE_PHARMACY_LAYER_KEY = 'cuidacao_show_pharmacies';
+let pharmacyLayer = null;
+let pharmaciesVisible = localStorage.getItem(STORAGE_PHARMACY_LAYER_KEY) !== '0';
 
 let currentFilter = 'all';
 let currentSearch = '';
@@ -274,8 +292,8 @@ const GUARUJA_BUILTIN_LOCATIONS = [
     address: 'Av. Marjory da Silva Prado, 1100 - Praia de Pernambuco, Guarujá - SP',
     city: 'Guarujá',
     state: 'SP',
-    lat: -23.97050,
-    lng: -46.19450,
+    lat: -23.96857,
+    lng: -46.18805,
     services: ['Programa Farmácia Popular', 'Descarte Consciente de Blisters e Remédios', 'Atendimento Farmacêutico'],
     opening_hours: { '0': { open: '08:00', close: '22:00' }, '1': { open: '08:00', close: '22:00' }, '2': { open: '08:00', close: '22:00' }, '3': { open: '08:00', close: '22:00' }, '4': { open: '08:00', close: '22:00' }, '5': { open: '08:00', close: '22:00' }, '6': { open: '08:00', close: '22:00' } },
     avg_wait_time: 4.8,
@@ -817,6 +835,7 @@ async function initMap() {
   neighborhoodsGroup.addTo(map);
   locationsGroup.addTo(map);
   reportsGroup.addTo(map);
+  initPharmacyLayer();
 
   renderNeighborhoodLabelsOnMap();
 
@@ -859,6 +878,7 @@ async function initMap() {
   ensureUserMarker(userCoords.lat, userCoords.lng, currentAccuracyMeters || 12, currentLocationSource);
   loadLocations();
   loadReports();
+  initCommunityBar();
 
   // Inicia detecção inteligente de localização com ancoragem segura no Bairro do Perequê
   detectAndApplyUserLocation(true);
@@ -1044,24 +1064,39 @@ function saveManualCoordinates(lat, lng, label) {
   } catch {
     // Ignora caso localStorage esteja indisponível
   }
+  // Posição escolhida à mão: o GPS continua lendo, mas para de mover o pino até "Centralizar em mim"
+  pauseLiveGpsFollow();
 }
 
-function ensureUserMarker(lat, lng, accuracyMeters, sourceLabel) {
+function accuracyVisualRadius(accuracyMeters) {
+  return accuracyMeters && accuracyMeters <= 15 ? 8 : Math.min(Math.max(accuracyMeters || 15, 10), 300);
+}
+
+function buildUserPopupHtml(accuracyMeters, sourceLabel) {
   const accText = accuracyMeters ? ' (precisão ±' + Math.round(accuracyMeters) + 'm)' : '';
-  const popupHtml =
+  const liveActive = liveGpsFollow && liveGpsTracker && liveGpsTracker.getState() === 'tracking';
+  return (
     '<div class="text-xs leading-snug">' +
       '<b class="text-blue-700">📍 Sua Localização (' + escapeHtml(sourceLabel || 'Bairro do Perequê') + ')</b>' +
       '<p class="text-gray-700 font-semibold mt-0.5">' + escapeHtml(currentAddressLabel) + accText + '</p>' +
-      '<p class="text-[10px] text-gray-500 mt-1">💡 Você pode arrastar este pino azul até sua rua exata no Perequê ou escolher qualquer bairro do Guarujá no topo.</p>' +
-    '</div>';
+      (liveActive ? '<p class="text-[10px] text-emerald-700 font-bold mt-1">🟢 GPS em tempo real ativo</p>' : '') +
+      '<p class="text-[10px] text-gray-500 mt-1">💡 Você pode arrastar este pino azul até sua rua exata (isso pausa o GPS em tempo real; toque em 🎯 Centralizar em mim para retomar).</p>' +
+    '</div>'
+  );
+}
+
+function ensureUserMarker(lat, lng, accuracyMeters, sourceLabel) {
+  const popupHtml = buildUserPopupHtml(accuracyMeters, sourceLabel);
 
   if (userMarker) {
+    // Posicionamento direto cancela qualquer animação de GPS em andamento
+    if (window.CuidacaoLiveGps) window.CuidacaoLiveGps.cancelMarkerAnimation(userMarker);
     userMarker.setLatLng([lat, lng]);
     userMarker.setPopupContent(popupHtml);
   } else {
     const pulseIcon = L.divIcon({
       className: '',
-      html: '<div class="user-pulse-pin" title="Sua posição exata no Bairro do Perequê (arraste para ajustar a rua)"></div>',
+      html: '<div class="user-pulse-pin" title="Sua posição (arraste para ajustar a rua)"></div>',
       iconSize: [24, 24],
       iconAnchor: [12, 12],
       popupAnchor: [0, -12]
@@ -1074,6 +1109,12 @@ function ensureUserMarker(lat, lng, accuracyMeters, sourceLabel) {
 
     userMarker.bindPopup(popupHtml);
 
+    // Enquanto o usuário arrasta, o GPS não pode "puxar" o pino de volta
+    userMarker.on('dragstart', () => {
+      if (window.CuidacaoLiveGps) window.CuidacaoLiveGps.cancelMarkerAnimation(userMarker);
+      pauseLiveGpsFollow();
+    });
+
     userMarker.on('dragend', async () => {
       const pos = userMarker.getLatLng();
       await applyUserCoordinates(pos.lat, pos.lng, 'Posição Exata (100%)', 3, false);
@@ -1083,7 +1124,7 @@ function ensureUserMarker(lat, lng, accuracyMeters, sourceLabel) {
     });
   }
 
-  const visualRadius = accuracyMeters && accuracyMeters <= 15 ? 8 : Math.min(Math.max(accuracyMeters || 15, 10), 300);
+  const visualRadius = accuracyVisualRadius(accuracyMeters);
   if (accuracyCircle) {
     accuracyCircle.setLatLng([lat, lng]);
     accuracyCircle.setRadius(visualRadius);
@@ -1101,69 +1142,40 @@ function ensureUserMarker(lat, lng, accuracyMeters, sourceLabel) {
 }
 
 // ============================================================================
-// 2. GEOLOCALIZAÇÃO CALIBRADA PARA O BAIRRO DO PEREQUÊ (PROTEÇÃO CONTRA ERRO DE IP)
+// 2. GEOLOCALIZAÇÃO: ÂNCORA NO PEREQUÊ + GPS EM TEMPO REAL (watchPosition)
 // ============================================================================
 async function detectAndApplyUserLocation(forceScan = false) {
-  // Se o usuário já salvou manualmente sua rua/bairro, respeita a escolha salvo se pedir leitura forçada
+  let respectManual = false;
+
+  // Se o usuário já salvou manualmente sua rua/bairro, respeita a escolha (salvo leitura forçada)
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_COORDS_KEY) || 'null');
     if (saved && saved.source === 'Manual' && !forceScan) {
-      await applyUserCoordinates(saved.lat, saved.lng, 'Bairro Calibrado', 5, true);
-      return;
+      respectManual = true;
+      liveGpsFollow = false;
+      applyUserCoordinates(saved.lat, saved.lng, 'Bairro Calibrado', 5, true).catch(() => {});
     }
   } catch {
     // Continua
   }
 
-  // Ancora imediatamente no Bairro do Perequê para que o usuário nunca fique em local errado
-  await applyUserCoordinates(
-    PEREQUE_COORDS.lat,
-    PEREQUE_COORDS.lng,
-    'Bairro do Perequê (Guarujá/SP)',
-    12,
-    true
-  );
-
-  if (!navigator.geolocation) {
-    return;
+  if (!respectManual) {
+    liveGpsFollow = true;
+    const knownFix = liveGpsLastAccepted;
+    if (knownFix) {
+      // GPS já ativo: usa na hora a leitura mais recente (o watch só avisa quando a posição muda)
+      liveGpsHasFirstFix = true;
+      liveGpsLastContext = { lat: knownFix.lat, lng: knownFix.lng, at: Date.now() };
+      applyUserCoordinates(knownFix.lat, knownFix.lng, 'GPS em tempo real', knownFix.accuracy || 10, true).catch(() => {});
+    } else {
+      // Ancora no Bairro do Perequê até a 1ª leitura válida do GPS chegar
+      liveGpsHasFirstFix = false;
+      applyUserCoordinates(PEREQUE_COORDS.lat, PEREQUE_COORDS.lng, 'Bairro do Perequê (Guarujá/SP)', 12, true).catch(() => {});
+    }
   }
 
-  if (geoWatchId !== null) {
-    navigator.geolocation.clearWatch(geoWatchId);
-    geoWatchId = null;
-  }
-
-  const handlePositionFix = async (pos) => {
-    const lat = pos.coords.latitude;
-    const lng = pos.coords.longitude;
-    const accuracy = pos.coords.accuracy || 9999;
-
-    if (isNaN(lat) || isNaN(lng)) return;
-
-    const distFromPereque = haversineMeters(lat, lng, PEREQUE_COORDS.lat, PEREQUE_COORDS.lng);
-
-    // Em computadores/notebooks sem chip GPS por satélite, o navegador retorna uma coordenada de IP
-    // da central da operadora (ex: Centro do Guarujá, Pitangueiras, Santos ou São Paulo) com baixa precisão.
-    // Só aceitamos deslocar o pino automaticamente se for um sinal GPS físico real de altíssima precisão
-    // dentro do próprio Bairro do Perequê / arredores imediatos (<= 3.5 km e accuracy <= 120m).
-    if (accuracy <= 300 && distFromPereque <= 30000) {
-      await applyUserCoordinates(lat, lng, 'GPS', accuracy, true);
-    }
-  };
-
-  navigator.geolocation.getCurrentPosition(
-    async (pos) => {
-      await handlePositionFix(pos);
-    },
-    () => {
-      // Mantém ancorado com precisão no Bairro do Perequê
-    },
-    {
-      enableHighAccuracy: true,
-      timeout: 6000,
-      maximumAge: 0
-    }
-  );
+  // Rastreamento contínuo e de alta precisão (substitui a leitura única com getCurrentPosition)
+  startLiveGpsTracking();
 }
 
 async function applyUserCoordinates(lat, lng, source, accuracyMeters = 10, shouldFly = true) {
@@ -1171,15 +1183,7 @@ async function applyUserCoordinates(lat, lng, source, accuracyMeters = 10, shoul
   currentLocationSource = source || 'Bairro do Perequê';
   currentAccuracyMeters = accuracyMeters;
 
-  const distToPereque = haversineMeters(lat, lng, PEREQUE_COORDS.lat, PEREQUE_COORDS.lng);
-  const nearestNb = findNearestNeighborhood(lat, lng);
-
-  if (distToPereque <= 1800) {
-    currentAddressLabel = 'Bairro do Perequê, Guarujá - SP';
-  } else if (nearestNb.distance <= 3500) {
-    currentAddressLabel = nearestNb.neighborhood.name + ', Guarujá - SP';
-  }
-
+  updateApproxAddressLabel(lat, lng);
   ensureUserMarker(lat, lng, accuracyMeters, source);
 
   if (map) {
@@ -1194,19 +1198,40 @@ async function applyUserCoordinates(lat, lng, source, accuracyMeters = 10, shoul
     }
   }
 
+  await refreshLocationContext(lat, lng);
+}
+
+function updateApproxAddressLabel(lat, lng) {
+  const distToPereque = haversineMeters(lat, lng, PEREQUE_COORDS.lat, PEREQUE_COORDS.lng);
+  const nearestNb = findNearestNeighborhood(lat, lng);
+  if (distToPereque <= 1800) {
+    currentAddressLabel = 'Bairro do Perequê, Guarujá - SP';
+  } else if (nearestNb.distance <= 3500) {
+    currentAddressLabel = nearestNb.neighborhood.name + ', Guarujá - SP';
+  }
+}
+
+// Endereço (geocodificação reversa), selo do bairro e locais/alertas próximos da posição atual.
+// Não reposiciona o pino: com o GPS ao vivo ele pode já ter andado enquanto a resposta chegava.
+async function refreshLocationContext(lat, lng) {
+  const seq = ++locationContextSeq;
+  const distToPereque = haversineMeters(lat, lng, PEREQUE_COORDS.lat, PEREQUE_COORDS.lng);
+  const nearestNb = findNearestNeighborhood(lat, lng);
+  updateApproxAddressLabel(lat, lng);
+
   try {
     const res = await fetch(API_BASE + '/api/v1/geo/reverse?lat=' + lat + '&lng=' + lng);
-    if (res.ok) {
-      const geoInfo = await res.json();
-      if (geoInfo && geoInfo.displayName) {
-        if (distToPereque <= 1800 && !geoInfo.displayName.toLowerCase().includes('perequ')) {
-          currentAddressLabel = geoInfo.displayName + ' (Bairro do Perequê)';
-        } else {
-          currentAddressLabel = geoInfo.displayName;
-        }
+    const geoInfo = res.ok ? await res.json() : null;
+    if (seq !== locationContextSeq) return; // chegou uma posição mais nova enquanto esperávamos
+    if (geoInfo && geoInfo.displayName) {
+      if (distToPereque <= 1800 && !geoInfo.displayName.toLowerCase().includes('perequ')) {
+        currentAddressLabel = geoInfo.displayName + ' (Bairro do Perequê)';
+      } else {
+        currentAddressLabel = geoInfo.displayName;
       }
     }
   } catch {
+    if (seq !== locationContextSeq) return;
     if (distToPereque <= 1800) {
       currentAddressLabel = 'Bairro do Perequê, Guarujá - SP';
     }
@@ -1219,43 +1244,330 @@ async function applyUserCoordinates(lat, lng, source, accuracyMeters = 10, shoul
     badge.innerHTML = '📍 <span class="max-w-[160px] sm:max-w-[230px] truncate">' + escapeHtml(currentAddressLabel) + '</span>' + precisionTag;
   }
 
-  ensureUserMarker(lat, lng, accuracyMeters, source);
+  if (userMarker) userMarker.setPopupContent(buildUserPopupHtml(currentAccuracyMeters, currentLocationSource));
   loadLocations();
   loadReports();
 }
 
-function refreshUserLocation() {
-  const fallbackToPereque = function (msg) {
-    showToast(msg, 'info');
-    selectPreciseLocation(PEREQUE_COORDS.lat, PEREQUE_COORDS.lng, 'Bairro do Perequê, Guarujá - SP');
-  };
-  if (!navigator.geolocation) {
-    fallbackToPereque('Este aparelho não oferece GPS. Mostrando o Bairro do Perequê.');
+// ---------------------------------------------------------------------------
+// GPS em tempo real — integração com js/map/live-gps.js
+// ---------------------------------------------------------------------------
+function getLiveGpsTracker() {
+  if (!liveGpsTracker && window.CuidacaoLiveGps) {
+    liveGpsTracker = window.CuidacaoLiveGps.createTracker({
+      onPosition: handleLiveGpsFix,
+      onError: handleLiveGpsError,
+      onStatusChange: updateGpsStatusIndicator
+    });
+  }
+  return liveGpsTracker;
+}
+
+function startLiveGpsTracking() {
+  const tracker = getLiveGpsTracker();
+  if (!tracker) {
+    console.warn('[CuidAção] Módulo de GPS (js/map/live-gps.js) não carregado.');
+    return false;
+  }
+  return tracker.start();
+}
+
+// Avisos discretos e sem repetição (no máximo 1 a cada `cooldownMs` por tipo)
+function notifyGps(key, message, type = 'info', cooldownMs = 120000) {
+  const now = Date.now();
+  if (liveGpsNoticeAt[key] && now - liveGpsNoticeAt[key] < cooldownMs) return;
+  liveGpsNoticeAt[key] = now;
+  showToast(message, type);
+}
+
+function handleLiveGpsFix(fix) {
+  const distFromPereque = haversineMeters(fix.lat, fix.lng, PEREQUE_COORDS.lat, PEREQUE_COORDS.lng);
+  if (distFromPereque > LIVE_GPS_MAX_DIST_FROM_PEREQUE_M) {
+    notifyGps('outside', 'Sua posição de GPS está fora do Guarujá/SP (área atendida pelo CuidAção). O pino fica na última posição dentro da cidade.');
     return;
   }
-  showToast('Buscando sua localização...', 'info');
-  navigator.geolocation.getCurrentPosition(
-    async function (pos) {
-      const lat = pos.coords.latitude;
-      const lng = pos.coords.longitude;
-      const accuracy = pos.coords.accuracy || 9999;
-      if (haversineMeters(lat, lng, PEREQUE_COORDS.lat, PEREQUE_COORDS.lng) > 30000) {
-        fallbackToPereque('Você parece estar fora do Guarujá. Mostrando o Bairro do Perequê.');
-        return;
-      }
-      await applyUserCoordinates(lat, lng, accuracy <= 300 ? 'GPS' : 'Localização aproximada', accuracy, true);
-    },
-    function () {
-      showToast('Não foi possível obter o GPS. Verifique a permissão de localização do aparelho.', 'error');
-    },
-    { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
-  );
+  if (fix.accuracy != null && fix.accuracy > LIVE_GPS_MAX_ACCURACY_M) {
+    notifyGps('weak', 'Sinal de GPS fraco (±' + Math.round(fix.accuracy) + ' m). Aguardando uma leitura mais precisa...');
+    return;
+  }
+
+  hideGpsAlert();
+  liveGpsLastAccepted = fix;
+  if (!liveGpsFollow) return; // posição fixada manualmente: só guarda a leitura para "Centralizar em mim"
+
+  // 1ª leitura válida: posiciona, centraliza e carrega endereço/locais
+  if (!liveGpsHasFirstFix || !userMarker) {
+    liveGpsHasFirstFix = true;
+    liveGpsCenterOnNextFix = false;
+    liveGpsLastContext = { lat: fix.lat, lng: fix.lng, at: Date.now() };
+    applyUserCoordinates(fix.lat, fix.lng, 'GPS em tempo real', fix.accuracy || 10, true).catch(() => {});
+    return;
+  }
+
+  // Leituras seguintes (usuário caminhando): só desliza o pino, sem tirar o mapa de onde o usuário deixou
+  moveUserMarkerSmoothly(fix);
+  if (liveGpsCenterOnNextFix) {
+    liveGpsCenterOnNextFix = false;
+    flyToUser(fix);
+  }
+  maybeRefreshLocationContext(fix);
+}
+
+function moveUserMarkerSmoothly(fix) {
+  userCoords = { lat: fix.lat, lng: fix.lng };
+  currentLocationSource = 'GPS em tempo real';
+  if (fix.accuracy != null) currentAccuracyMeters = fix.accuracy;
+
+  if (!userMarker || !window.CuidacaoLiveGps) {
+    ensureUserMarker(fix.lat, fix.lng, currentAccuracyMeters, currentLocationSource);
+    return;
+  }
+
+  if (accuracyCircle) accuracyCircle.setRadius(accuracyVisualRadius(currentAccuracyMeters));
+  window.CuidacaoLiveGps.animateMarkerTo(userMarker, fix, {
+    duration: 900,
+    onStep: (latLng) => {
+      if (accuracyCircle) accuracyCircle.setLatLng(latLng);
+    }
+  });
+  userMarker.setPopupContent(buildUserPopupHtml(currentAccuracyMeters, currentLocationSource));
+}
+
+function maybeRefreshLocationContext(fix) {
+  const now = Date.now();
+  const last = liveGpsLastContext;
+  if (last) {
+    const tooSoon = now - last.at < LIVE_GPS_CONTEXT_MIN_INTERVAL_MS;
+    const tooClose = haversineMeters(last.lat, last.lng, fix.lat, fix.lng) < LIVE_GPS_CONTEXT_MIN_MOVE_M;
+    if (tooSoon || tooClose) return;
+  }
+  liveGpsLastContext = { lat: fix.lat, lng: fix.lng, at: now };
+  refreshLocationContext(fix.lat, fix.lng).catch(() => {});
+}
+
+function handleLiveGpsError(err) {
+  if (err.kind === 'permission-denied' || err.kind === 'insecure' || err.kind === 'unsupported') {
+    liveGpsCenterOnNextFix = false;
+    showGpsAlert(err.kind === 'permission-denied' ? 'denied' : err.kind);
+    return;
+  }
+  // Timeout/indisponível: o watchPosition continua tentando. Se já temos posição recente, segue em silêncio.
+  if (liveGpsLastAccepted && Date.now() - liveGpsLastAccepted.timestamp < 60000) return;
+  if (err.kind === 'timeout') {
+    notifyGps('timeout', 'O GPS está demorando para responder. Tente ir para um local aberto ou perto de uma janela — seguimos tentando.');
+  } else {
+    notifyGps('unavailable', 'Sinal de GPS indisponível no momento. Verifique se a localização do aparelho está ligada — seguimos tentando.');
+  }
+}
+
+function pauseLiveGpsFollow() {
+  if (!liveGpsFollow) return;
+  liveGpsFollow = false;
+  liveGpsCenterOnNextFix = false;
+  if (liveGpsTracker) {
+    updateGpsStatusIndicator(liveGpsTracker.getState());
+    if (liveGpsTracker.getState() === 'tracking') {
+      showToast('GPS em tempo real pausado na posição escolhida. Toque em 🎯 Centralizar em mim para voltar a seguir o GPS.', 'info');
+    }
+  }
+}
+
+function flyToUser(fix) {
+  if (!map || !fix) return;
+  const target = L.latLng(fix.lat, fix.lng);
+  if (map.getZoom() >= 16 && map.getCenter().distanceTo(target) < 1500) {
+    map.panTo(target, { animate: true, duration: 0.6 });
+  } else {
+    map.flyTo(target, Math.max(map.getZoom(), 16), { animate: true, duration: 0.9 });
+  }
+}
+
+// Botão "Centralizar em mim": foca na coordenada de GPS mais recente (e retoma o GPS se estava pausado)
+function centerOnMe() {
+  const tracker = getLiveGpsTracker();
+  if (!tracker) {
+    showToast('O módulo de GPS não foi carregado. Recarregue a página.', 'error');
+    return;
+  }
+
+  const state = tracker.getState();
+  if (state === 'denied' || state === 'insecure' || state === 'unsupported') {
+    // A permissão pode ter sido liberada nas configurações; se continuar bloqueada, o alerta reaparece
+    retryLiveGps();
+    return;
+  }
+
+  const wasPaused = !liveGpsFollow;
+  liveGpsFollow = true;
+  if (!tracker.isActive()) tracker.start();
+  updateGpsStatusIndicator(tracker.getState());
+  if (wasPaused) {
+    try { localStorage.removeItem(STORAGE_COORDS_KEY); } catch { /* ignora */ }
+  }
+
+  const fix = liveGpsLastAccepted;
+  if (fix) {
+    if (wasPaused || !liveGpsHasFirstFix) {
+      liveGpsHasFirstFix = true;
+      liveGpsLastContext = { lat: fix.lat, lng: fix.lng, at: Date.now() };
+      applyUserCoordinates(fix.lat, fix.lng, 'GPS em tempo real', fix.accuracy || 10, false).catch(() => {});
+      if (wasPaused) showToast('Voltamos a seguir seu GPS em tempo real.', 'success');
+    }
+    flyToUser(fix);
+    return;
+  }
+
+  // Ainda sem leitura válida: centraliza assim que ela chegar
+  if (wasPaused) liveGpsHasFirstFix = false;
+  liveGpsCenterOnNextFix = true;
+  const raw = tracker.getLastFix();
+  if (raw && haversineMeters(raw.lat, raw.lng, PEREQUE_COORDS.lat, PEREQUE_COORDS.lng) > LIVE_GPS_MAX_DIST_FROM_PEREQUE_M) {
+    showToast('Sua posição de GPS está fora do Guarujá/SP, área atendida pelo CuidAção.', 'info');
+  } else if (raw && raw.accuracy != null && raw.accuracy > LIVE_GPS_MAX_ACCURACY_M) {
+    showToast('Sinal de GPS fraco (±' + Math.round(raw.accuracy) + ' m). Centralizamos assim que ficar mais preciso.', 'info');
+  } else {
+    showToast('Procurando o sinal do GPS... centralizamos assim que ele chegar.', 'info');
+  }
+}
+
+// Compatibilidade com chamadas antigas
+function refreshUserLocation() {
+  centerOnMe();
 }
 
 function forceGpsScan() {
   localStorage.removeItem(STORAGE_COORDS_KEY);
   detectAndApplyUserLocation(true);
   showToast('Buscando sua posição por GPS...', 'info');
+}
+
+function retryLiveGps() {
+  hideGpsAlert();
+  liveGpsFollow = true;
+  liveGpsCenterOnNextFix = true;
+  if (startLiveGpsTracking()) {
+    showToast('Solicitando acesso ao GPS...', 'info');
+  }
+}
+
+const GPS_STATUS_LABELS = {
+  idle: 'GPS desligado',
+  waiting: 'procurando sinal do GPS…',
+  tracking: 'GPS em tempo real ativo',
+  manual: 'posição fixada manualmente (toque para voltar ao GPS)',
+  paused: 'GPS pausado (app em segundo plano)',
+  denied: 'permissão de localização negada',
+  insecure: 'GPS bloqueado (o site precisa de HTTPS)',
+  unsupported: 'aparelho sem localização'
+};
+
+function updateGpsStatusIndicator(state) {
+  const effective = (state === 'tracking' || state === 'waiting') && !liveGpsFollow ? 'manual' : state;
+  const dot = document.getElementById('gps-status-dot');
+  if (dot) dot.dataset.state = effective;
+  const btn = document.getElementById('btn-center-me');
+  if (btn) btn.title = 'Centralizar em mim — ' + (GPS_STATUS_LABELS[effective] || '');
+}
+
+// Alerta amigável (fica na tela até o usuário agir) para permissão negada / sem HTTPS / sem GPS
+function getGpsAlertContent(kind) {
+  const fallbackTip = 'Enquanto isso, você pode usar o mapa normalmente, buscar por CEP ou marcar sua rua manualmente.';
+  if (kind === 'insecure') {
+    return {
+      title: 'GPS bloqueado nesta conexão',
+      text: 'Por segurança, o navegador só libera a localização em sites com HTTPS (ou em localhost). Abra o CuidAção pelo endereço publicado com https://. ' + fallbackTip,
+      retry: false
+    };
+  }
+  if (kind === 'unsupported') {
+    return {
+      title: 'Localização indisponível neste aparelho',
+      text: 'Seu aparelho ou navegador não oferece acesso ao GPS. ' + fallbackTip,
+      retry: false
+    };
+  }
+  const howTo = IS_NATIVE_APP
+    ? 'Para liberar, abra Configurações do celular › Apps › CuidAção › Permissões › Localização › Permitir'
+    : 'Para liberar, toque no cadeado 🔒 ao lado do endereço do site › Permissões › Localização › Permitir';
+  return {
+    title: 'Permita o acesso à sua localização',
+    text: 'Sem essa permissão não conseguimos mostrar sua posição em tempo real nem as unidades de saúde mais perto de você. ' +
+      howTo + ' e depois toque em "Tentar novamente". ' + fallbackTip,
+    retry: true
+  };
+}
+
+function showGpsAlert(kind) {
+  const content = getGpsAlertContent(kind);
+  const el = document.getElementById('gps-alert');
+  if (!el) {
+    showToast(content.title + '. ' + content.text, 'error');
+    return;
+  }
+  document.getElementById('gps-alert-title').textContent = content.title;
+  document.getElementById('gps-alert-text').textContent = content.text;
+  const retryBtn = document.getElementById('gps-alert-retry');
+  if (retryBtn) retryBtn.classList.toggle('hidden', !content.retry);
+  el.classList.remove('hidden');
+}
+
+function hideGpsAlert() {
+  const el = document.getElementById('gps-alert');
+  if (el) el.classList.add('hidden');
+}
+
+function openLocationSearchFromGpsAlert() {
+  hideGpsAlert();
+  openLocationModal();
+}
+
+// ============================================================================
+// CAMADA DE FARMÁCIAS (MOCK DO TCC) — js/map/pharmacies-data.js + js/map/pharmacy-layer.js
+// ============================================================================
+function initPharmacyLayer() {
+  if (!map || !window.CuidacaoPharmacyLayer || !Array.isArray(window.CUIDACAO_FARMACIAS_MOCK)) {
+    console.warn('[CuidAção] Camada de farmácias indisponível (módulos não carregados).');
+    updatePharmacyToggleButton();
+    return;
+  }
+  try {
+    pharmacyLayer = window.CuidacaoPharmacyLayer.create(window.CUIDACAO_FARMACIAS_MOCK, {
+      isMockData: false,
+      getUserPosition: () => userCoords
+    });
+    if (pharmaciesVisible) pharmacyLayer.addTo(map);
+  } catch (err) {
+    console.warn('[CuidAção] Erro ao criar a camada de farmácias:', err);
+    pharmacyLayer = null;
+  }
+  updatePharmacyToggleButton();
+}
+
+function togglePharmacyLayer() {
+  if (!pharmacyLayer || !map) {
+    showToast('A camada de farmácias não está disponível.', 'error');
+    return;
+  }
+  pharmaciesVisible = !pharmaciesVisible;
+  if (pharmaciesVisible) pharmacyLayer.addTo(map);
+  else map.removeLayer(pharmacyLayer);
+  try { localStorage.setItem(STORAGE_PHARMACY_LAYER_KEY, pharmaciesVisible ? '1' : '0'); } catch { /* ignora */ }
+  updatePharmacyToggleButton();
+  showToast(
+    pharmaciesVisible
+      ? 'Farmácias exibidas no mapa (pino com cruz verde; selo FP = Farmácia Popular).'
+      : 'Farmácias ocultadas do mapa.',
+    'info'
+  );
+}
+
+function updatePharmacyToggleButton() {
+  const btn = document.getElementById('btn-toggle-pharmacies');
+  if (!btn) return;
+  const active = pharmaciesVisible && !!pharmacyLayer;
+  btn.setAttribute('aria-pressed', String(active));
+  btn.classList.toggle('is-active', active);
+  btn.title = active ? 'Ocultar farmácias do mapa' : 'Mostrar farmácias no mapa';
 }
 
 // ============================================================================
@@ -1631,6 +1943,7 @@ function openSidebarById(id) {
 }
 
 function openSidebar(loc) {
+  closeCommunityBar();
   selectedLocation = loc;
   document.getElementById('side-title').innerText = loc.name;
   document.getElementById('side-address').innerText = loc.address;
@@ -2527,6 +2840,8 @@ function handleAndroidBack() {
     const el = document.getElementById(id);
     if (el && !el.classList.contains('hidden')) { el.classList.add('hidden'); return; }
   }
+  const communityEl = document.getElementById('community-bar');
+  if (communityEl && !communityEl.classList.contains('hidden')) { closeCommunityBar(); return; }
   const sidebarEl = document.getElementById('sidebar');
   if (sidebarEl && !sidebarEl.classList.contains('hidden')) { closeSidebar(); return; }
   if (pickLocationMode) { cancelPickLocationMode(); return; }
@@ -2538,6 +2853,611 @@ function handleAndroidBack() {
 
 if (IS_NATIVE_APP && window.Capacitor.Plugins && window.Capacitor.Plugins.App) {
   window.Capacitor.Plugins.App.addListener('backButton', handleAndroidBack);
+}
+
+// ============================================================================
+// BARRA DE COMUNIDADE E ALERTAS INTEGRADA AO SITE DO TCC (100% SVG, SEM EMOJIS)
+// ============================================================================
+const CB_STORAGE_KEY = 'comunidade.alertas.v1';
+const CB_COMMENT_MAX = 225;
+const CB_DETAILS_MAX = 1000;
+const CB_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+const CB_IMAGE_MAX_SIDE = 1280;
+const CB_IMAGE_QUALITY = 0.82;
+const CB_RATING_LABELS = ['Selecione de 1 a 5', 'Ruim', 'Regular', 'Bom', 'Muito bom', 'Excelente'];
+const CB_DEFAULT_POST_SVG =
+  'data:image/svg+xml;utf8,' +
+  encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360">' +
+      '<defs>' +
+        '<linearGradient id="g" x1="0" y1="0" x2="1" y2="1">' +
+          '<stop offset="0%" stop-color="#1f4d3f"/>' +
+          '<stop offset="100%" stop-color="#2f6f5e"/>' +
+        '</linearGradient>' +
+      '</defs>' +
+      '<rect width="640" height="360" fill="url(#g)"/>' +
+      '<circle cx="520" cy="88" r="42" fill="#e8f1ee" fill-opacity="0.16"/>' +
+      '<path d="M0 280 Q160 220 320 265 T640 245 L640 360 L0 360 Z" fill="#173a30" fill-opacity="0.55"/>' +
+      '<g fill="none" stroke="#e8f1ee" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" opacity="0.9">' +
+        '<rect x="276" y="116" width="88" height="88" rx="18" fill="#e8f1ee" fill-opacity="0.12"/>' +
+        '<path d="M320 138v44M298 160h44"/>' +
+      '</g>' +
+      '<text x="320" y="242" text-anchor="middle" fill="#ffffff" font-family="system-ui,sans-serif" font-size="20" font-weight="700">Ação Comunitária • Bairro do Perequê</text>' +
+      '<text x="320" y="268" text-anchor="middle" fill="#d3e6df" font-family="system-ui,sans-serif" font-size="14">Mutirão de Saúde Única e Limpeza Costeira</text>' +
+    '</svg>'
+  );
+
+let cbInitialized = false;
+
+function openCommunityBar() {
+  const bar = document.getElementById('community-bar');
+  if (!bar) return;
+  closeSidebar();
+  bar.classList.remove('hidden');
+  const btn = document.getElementById('btn-community-bar');
+  if (btn) btn.setAttribute('aria-expanded', 'true');
+}
+
+function closeCommunityBar() {
+  const bar = document.getElementById('community-bar');
+  if (!bar) return;
+  bar.classList.add('hidden');
+  const btn = document.getElementById('btn-community-bar');
+  if (btn) btn.setAttribute('aria-expanded', 'false');
+}
+
+function toggleCommunityBar() {
+  const bar = document.getElementById('community-bar');
+  if (!bar) return;
+  if (bar.classList.contains('hidden')) {
+    openCommunityBar();
+  } else {
+    closeCommunityBar();
+  }
+}
+
+function initCommunityBar() {
+  if (cbInitialized) return;
+  const bar = document.getElementById('community-bar');
+  if (!bar) return;
+  cbInitialized = true;
+
+  const $ = (sel, root) => (root || bar).querySelector(sel);
+  const els = {
+    form: $('#cb-post-form'),
+    fileInput: $('#cb-post-image'),
+    dropzone: $('#cb-dropzone'),
+    preview: $('#cb-preview'),
+    previewImg: $('#cb-preview-img'),
+    previewChange: $('#cb-preview-change'),
+    previewRemove: $('#cb-preview-remove'),
+    details: $('#cb-post-details'),
+    detailsCount: $('#cb-details-count'),
+    rating: $('#cb-post-rating'),
+    ratingCaption: $('#cb-rating-caption'),
+    error: $('#cb-post-error'),
+    submit: $('#cb-post-submit'),
+    feed: $('#cb-feed'),
+    feedEmpty: $('#cb-feed-empty'),
+    feedCount: $('#cb-feed-count'),
+    tplPost: $('#cb-tpl-post'),
+    tplComment: $('#cb-tpl-comment'),
+    headerBadge: document.getElementById('community-bar-badge')
+  };
+
+  const state = {
+    posts: loadCbPosts(),
+    rating: 0,
+    image: { token: 0, job: null }
+  };
+  const stars = [];
+
+  function cbUid() {
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+    return Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+  }
+
+  function pluralize(n, one, many) {
+    return n + ' ' + (n === 1 ? one : many);
+  }
+
+  const rtf = (typeof Intl !== 'undefined' && Intl.RelativeTimeFormat)
+    ? new Intl.RelativeTimeFormat('pt-BR', { numeric: 'auto' })
+    : null;
+
+  function relativeTime(ts) {
+    const diff = (ts - Date.now()) / 1000;
+    const abs = Math.abs(diff);
+    if (abs < 45) return 'agora';
+    if (!rtf) return new Date(ts).toLocaleString('pt-BR');
+    const units = [
+      ['year', 31557600],
+      ['month', 2629800],
+      ['week', 604800],
+      ['day', 86400],
+      ['hour', 3600],
+      ['minute', 60]
+    ];
+    for (let i = 0; i < units.length; i++) {
+      if (abs >= units[i][1] || units[i][0] === 'minute') {
+        return rtf.format(Math.round(diff / units[i][1]), units[i][0]);
+      }
+    }
+    return '';
+  }
+
+  function setTime(el, ts) {
+    const d = new Date(ts);
+    el.dateTime = d.toISOString();
+    el.dataset.cbTs = String(ts);
+    el.title = d.toLocaleString('pt-BR');
+    el.textContent = relativeTime(ts);
+  }
+
+  function svgUse(id, className) {
+    const ns = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('class', 'cb-icon' + (className ? ' ' + className : ''));
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('focusable', 'false');
+    const use = document.createElementNS(ns, 'use');
+    use.setAttribute('href', '#' + id);
+    svg.appendChild(use);
+    return svg;
+  }
+
+  function sanitizeCbPost(p) {
+    if (!p || typeof p !== 'object') return null;
+    if (typeof p.image !== 'string' || p.image.indexOf('data:image/') !== 0) return null;
+    const rating = Math.round(Number(p.rating));
+    if (!(rating >= 1 && rating <= 5)) return null;
+    const details = String(p.details || '').slice(0, CB_DETAILS_MAX);
+    if (!details.trim()) return null;
+    const comments = Array.isArray(p.comments) ? p.comments : [];
+    return {
+      id: String(p.id || cbUid()),
+      image: p.image,
+      details,
+      rating,
+      createdAt: Number(p.createdAt) || Date.now(),
+      comments: comments
+        .filter(c => c && typeof c.text === 'string' && c.text.trim())
+        .map(c => ({
+          id: String(c.id || cbUid()),
+          author: String(c.author || 'Morador').slice(0, 60),
+          text: c.text.slice(0, CB_COMMENT_MAX),
+          createdAt: Number(c.createdAt) || Date.now()
+        }))
+    };
+  }
+
+  function loadCbPosts() {
+    try {
+      const raw = localStorage.getItem(CB_STORAGE_KEY);
+      if (raw !== null) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          return parsed.map(sanitizeCbPost).filter(Boolean);
+        }
+      }
+    } catch {
+      // Continua para o seed inicial
+    }
+    const seed = [
+      {
+        id: 'cb-seed-pereque-1',
+        image: CB_DEFAULT_POST_SVG,
+        details: 'Mutirão comunitário de prevenção à dengue e recolhimento de recicláveis na Av. Rio Amazonas (Perequê). Equipe de agentes de saúde orientando moradores sobre descarte correto e pontos do Ecoponto.',
+        rating: 5,
+        createdAt: Date.now() - 25 * 60 * 1000,
+        comments: [
+          {
+            id: 'cb-comm-1',
+            author: 'Morador do Perequê',
+            text: 'Excelente mobilização na Av. Rio Amazonas. O caminhão de coleta seletiva já retirou os materiais descartados perto da praça.',
+            createdAt: Date.now() - 10 * 60 * 1000
+          }
+        ]
+      }
+    ];
+    try {
+      localStorage.setItem(CB_STORAGE_KEY, JSON.stringify(seed));
+    } catch {
+      // Ignora
+    }
+    return seed;
+  }
+
+  function saveCbPosts() {
+    try {
+      localStorage.setItem(CB_STORAGE_KEY, JSON.stringify(state.posts));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // 1. Upload de imagem com preview instantâneo via FileReader
+  function readFileAsDataURL(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function loadImageElement(src) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = reject;
+      img.src = src;
+    });
+  }
+
+  function optimizeImage(dataUrl) {
+    return loadImageElement(dataUrl).then(img => {
+      const w = img.naturalWidth;
+      const h = img.naturalHeight;
+      const scale = Math.min(1, CB_IMAGE_MAX_SIDE / Math.max(w, h));
+      if (scale === 1 && dataUrl.length < 400000) return dataUrl;
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(w * scale);
+      canvas.height = Math.round(h * scale);
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      return canvas.toDataURL('image/jpeg', CB_IMAGE_QUALITY);
+    });
+  }
+
+  function handleFile(file) {
+    hideError();
+    if (!file) return;
+    if (!/^image\//.test(file.type)) {
+      els.fileInput.value = '';
+      showError('Selecione um arquivo de imagem válido (JPG, PNG ou WebP).', els.fileInput);
+      return;
+    }
+    if (file.size > CB_IMAGE_MAX_BYTES) {
+      els.fileInput.value = '';
+      showError('A imagem deve ter no máximo 10 MB.', els.fileInput);
+      return;
+    }
+
+    const token = ++state.image.token;
+    readFileAsDataURL(file)
+      .then(dataUrl => {
+        if (token !== state.image.token) return;
+        els.previewImg.src = dataUrl;
+        els.preview.hidden = false;
+        els.dropzone.hidden = true;
+        state.image.job = optimizeImage(dataUrl).catch(() => dataUrl);
+      })
+      .catch(() => {
+        if (token === state.image.token) {
+          showError('Não foi possível ler a imagem selecionada.', els.fileInput);
+        }
+      });
+  }
+
+  function clearImage() {
+    state.image.token++;
+    state.image.job = null;
+    els.fileInput.value = '';
+    els.previewImg.removeAttribute('src');
+    els.preview.hidden = true;
+    els.dropzone.hidden = false;
+  }
+
+  els.fileInput.addEventListener('change', () => {
+    handleFile(els.fileInput.files && els.fileInput.files[0]);
+  });
+  els.previewChange.addEventListener('click', () => els.fileInput.click());
+  els.previewRemove.addEventListener('click', () => {
+    clearImage();
+    els.fileInput.focus();
+  });
+
+  ['dragenter', 'dragover'].forEach(type => {
+    els.dropzone.addEventListener(type, e => {
+      e.preventDefault();
+      els.dropzone.classList.add('is-dragover');
+    });
+  });
+  ['dragleave', 'drop'].forEach(type => {
+    els.dropzone.addEventListener(type, () => els.dropzone.classList.remove('is-dragover'));
+  });
+  els.dropzone.addEventListener('drop', e => {
+    e.preventDefault();
+    const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    handleFile(file);
+  });
+
+  els.details.addEventListener('input', () => {
+    els.detailsCount.textContent = els.details.value.length + ' / ' + CB_DETAILS_MAX;
+    if (els.details.value.trim()) {
+      els.details.removeAttribute('aria-invalid');
+      hideError();
+    }
+  });
+
+  // Sistema de avaliação 1 a 5 estrelas (SVG interativo com hover e clique)
+  function buildRating() {
+    for (let i = 1; i <= 5; i++) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'cb-star';
+      btn.dataset.value = String(i);
+      btn.setAttribute('role', 'radio');
+      btn.setAttribute('aria-checked', 'false');
+      btn.setAttribute('aria-label', pluralize(i, 'estrela', 'estrelas') + ', ' + CB_RATING_LABELS[i]);
+      btn.tabIndex = i === 1 ? 0 : -1;
+      btn.appendChild(svgUse('cb-star'));
+      els.rating.appendChild(btn);
+      stars.push(btn);
+    }
+  }
+
+  function paintStars(value) {
+    stars.forEach((star, idx) => star.classList.toggle('is-filled', idx < value));
+    els.ratingCaption.textContent = value ? value + ' de 5 · ' + CB_RATING_LABELS[value] : CB_RATING_LABELS[0];
+  }
+
+  function setRating(value, moveFocus) {
+    state.rating = value;
+    stars.forEach((star, idx) => {
+      const checked = idx + 1 === value;
+      star.setAttribute('aria-checked', String(checked));
+      star.tabIndex = (value ? checked : idx === 0) ? 0 : -1;
+    });
+    paintStars(value);
+    if (value) {
+      if (moveFocus) stars[value - 1].focus();
+      hideError();
+    }
+  }
+
+  els.rating.addEventListener('click', e => {
+    const star = e.target.closest('.cb-star');
+    if (star) setRating(Number(star.dataset.value), false);
+  });
+
+  els.rating.addEventListener('pointerover', e => {
+    if (e.pointerType !== 'mouse') return;
+    const star = e.target.closest('.cb-star');
+    if (star) paintStars(Number(star.dataset.value));
+  });
+  els.rating.addEventListener('pointerleave', () => paintStars(state.rating));
+
+  els.rating.addEventListener('keydown', e => {
+    const current = state.rating || 0;
+    let next = null;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowUp') next = Math.min(5, current + 1);
+    else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') next = Math.max(1, current - 1);
+    else if (e.key === 'Home') next = 1;
+    else if (e.key === 'End') next = 5;
+    if (next !== null) {
+      e.preventDefault();
+      setRating(next, true);
+    }
+  });
+
+  function showError(message, focusEl) {
+    els.error.textContent = message;
+    els.error.hidden = false;
+    if (focusEl) focusEl.focus();
+  }
+
+  function hideError() {
+    els.error.hidden = true;
+    els.error.textContent = '';
+  }
+
+  function resetComposer() {
+    els.form.reset();
+    clearImage();
+    els.details.removeAttribute('aria-invalid');
+    els.detailsCount.textContent = '0 / ' + CB_DETAILS_MAX;
+    setRating(0, false);
+    hideError();
+  }
+
+  els.form.addEventListener('submit', e => {
+    e.preventDefault();
+    hideError();
+
+    const details = els.details.value.trim();
+    if (!state.image.job) {
+      showError('Anexe uma imagem do evento antes de publicar.', els.fileInput);
+      return;
+    }
+    if (!details) {
+      els.details.setAttribute('aria-invalid', 'true');
+      showError('Descreva os detalhes do evento ou alerta.', els.details);
+      return;
+    }
+    if (details.length > CB_DETAILS_MAX) {
+      els.details.setAttribute('aria-invalid', 'true');
+      showError('A descrição deve ter no máximo ' + CB_DETAILS_MAX + ' caracteres.', els.details);
+      return;
+    }
+    if (state.rating < 1 || state.rating > 5) {
+      showError('Selecione uma avaliação de 1 a 5 estrelas.', stars[0]);
+      return;
+    }
+
+    els.submit.disabled = true;
+    els.submit.textContent = 'Publicando...';
+
+    state.image.job
+      .then(image => {
+        const post = {
+          id: cbUid(),
+          image,
+          details,
+          rating: state.rating,
+          createdAt: Date.now(),
+          comments: []
+        };
+        state.posts.unshift(post);
+        saveCbPosts();
+
+        const node = renderCbPost(post);
+        els.feed.insertBefore(node, els.feed.firstChild);
+        updateFeedMeta();
+        resetComposer();
+        node.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      })
+      .finally(() => {
+        els.submit.disabled = false;
+        els.submit.textContent = 'Publicar';
+      });
+  });
+
+  // 2. Renderização dos Cards do Feed
+  function renderStaticStars(container, rating) {
+    container.setAttribute('aria-label', 'Avaliação: ' + rating + ' de 5 estrelas');
+    for (let i = 1; i <= 5; i++) {
+      container.appendChild(svgUse('cb-star', i <= rating ? 'is-filled' : ''));
+    }
+  }
+
+  function renderCbComment(comment) {
+    const node = els.tplComment.content.firstElementChild.cloneNode(true);
+    $('.cb-comment-author', node).textContent = comment.author || 'Morador';
+    setTime($('.cb-comment-time', node), comment.createdAt);
+    $('.cb-comment-text', node).textContent = comment.text;
+    return node;
+  }
+
+  function renderCbPost(post) {
+    const node = els.tplPost.content.firstElementChild.cloneNode(true);
+    node.dataset.id = post.id;
+
+    const img = $('.cb-post-img', node);
+    img.src = post.image;
+    img.alt = 'Imagem do evento: ' + post.details.slice(0, 80);
+
+    renderStaticStars($('.cb-stars-static', node), post.rating);
+    setTime($('.cb-post-time', node), post.createdAt);
+    $('.cb-post-details', node).textContent = post.details;
+
+    const inputId = 'cb-comment-' + post.id;
+    const counterId = 'cb-counter-' + post.id;
+    const label = $('.cb-comment-label', node);
+    const textarea = $('.cb-comment-input', node);
+    const counter = $('.cb-counter', node);
+    label.htmlFor = inputId;
+    textarea.id = inputId;
+    counter.id = counterId;
+    textarea.setAttribute('aria-describedby', counterId);
+    textarea.maxLength = CB_COMMENT_MAX;
+    counter.textContent = '0 / ' + CB_COMMENT_MAX;
+
+    const list = $('.cb-comment-list', node);
+    post.comments.forEach(c => list.appendChild(renderCbComment(c)));
+    $('.cb-comments-count', node).textContent = String(post.comments.length);
+
+    return node;
+  }
+
+  function renderFeed() {
+    const frag = document.createDocumentFragment();
+    state.posts.forEach(p => frag.appendChild(renderCbPost(p)));
+    els.feed.textContent = '';
+    els.feed.appendChild(frag);
+    updateFeedMeta();
+  }
+
+  function updateFeedMeta() {
+    const n = state.posts.length;
+    els.feedEmpty.hidden = n > 0;
+    els.feedCount.textContent = n ? pluralize(n, 'publicação', 'publicações') : '';
+    if (els.headerBadge) {
+      els.headerBadge.textContent = String(n);
+    }
+  }
+
+  // 3. Sistema de Comentários no Card (limite estrito de 225 caracteres + contador dinâmico)
+  function setCommentError(form, message) {
+    const error = $('.cb-comment-error', form);
+    const textarea = $('.cb-comment-input', form);
+    error.textContent = message || '';
+    form.classList.toggle('has-error', !!message);
+    if (message) textarea.setAttribute('aria-invalid', 'true');
+    else textarea.removeAttribute('aria-invalid');
+  }
+
+  function updateCommentCounter(textarea) {
+    const form = textarea.form;
+    const length = textarea.value.length;
+    const counter = $('.cb-counter', form);
+    counter.textContent = length + ' / ' + CB_COMMENT_MAX;
+    counter.classList.toggle('is-limit', length >= CB_COMMENT_MAX);
+    form.classList.toggle('is-ready', textarea.value.trim().length > 0 && length <= CB_COMMENT_MAX);
+  }
+
+  els.feed.addEventListener('input', e => {
+    const textarea = e.target;
+    if (!textarea.classList || !textarea.classList.contains('cb-comment-input')) return;
+    updateCommentCounter(textarea);
+    if (textarea.value.trim()) setCommentError(textarea.form, '');
+  });
+
+  els.feed.addEventListener('submit', e => {
+    const form = e.target;
+    if (!form.classList.contains('cb-comment-form')) return;
+    e.preventDefault();
+
+    const textarea = $('.cb-comment-input', form);
+    const raw = textarea.value;
+    const text = raw.trim();
+
+    if (!text) {
+      setCommentError(form, 'Digite um comentário antes de enviar.');
+      textarea.focus();
+      return;
+    }
+    if (raw.length > CB_COMMENT_MAX || text.length > CB_COMMENT_MAX) {
+      setCommentError(form, 'O comentário não pode ultrapassar ' + CB_COMMENT_MAX + ' caracteres.');
+      textarea.focus();
+      return;
+    }
+
+    const postEl = form.closest('.cb-post');
+    const post = state.posts.find(p => p.id === postEl.dataset.id);
+    if (!post) return;
+
+    const authorName = (currentUser && currentUser.name) ? currentUser.name : 'Morador';
+    const comment = {
+      id: cbUid(),
+      author: authorName,
+      text,
+      createdAt: Date.now()
+    };
+    post.comments.unshift(comment);
+    saveCbPosts();
+
+    const list = $('.cb-comment-list', postEl);
+    list.insertBefore(renderCbComment(comment), list.firstChild);
+    $('.cb-comments-count', postEl).textContent = String(post.comments.length);
+
+    textarea.value = '';
+    setCommentError(form, '');
+    updateCommentCounter(textarea);
+  });
+
+  buildRating();
+  renderFeed();
+
+  setInterval(() => {
+    bar.querySelectorAll('time[data-cb-ts]').forEach(el => {
+      el.textContent = relativeTime(Number(el.dataset.cbTs));
+    });
+  }, 60000);
 }
 
 window.onload = initMap;

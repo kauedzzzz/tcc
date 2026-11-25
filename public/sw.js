@@ -4,19 +4,24 @@
  * - Tiles do mapa: cache com limite (mapa visitado continua visível offline)
  * - API de locais/alertas: rede primeiro, com os últimos dados como reserva offline
  */
-const VERSION = 'v3';
+const VERSION = 'v6';
 const SHELL_CACHE = 'cuidacao-shell-' + VERSION;
 const RUNTIME_CACHE = 'cuidacao-runtime-' + VERSION;
 const TILE_CACHE = 'cuidacao-tiles-' + VERSION;
 const API_CACHE = 'cuidacao-api-' + VERSION;
 const MAX_TILES = 400;
 
+// Mantenha estes caminhos iguais aos do index.html (incluindo o ?v=)
 const SHELL_ASSETS = [
   './',
   'index.html',
-  'css/styles.css',
+  'comunidade.html',
+  'css/styles.css?v=6',
   'js/config.js',
-  'js/app.js',
+  'js/map/live-gps.js?v=6',
+  'js/map/pharmacies-data.js?v=6',
+  'js/map/pharmacy-layer.js?v=6',
+  'js/app.js?v=6',
   'manifest.json',
   'icons/icon-192.png',
   'icons/icon-512.png'

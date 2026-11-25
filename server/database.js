@@ -409,8 +409,8 @@ function buildSeedData() {
         address: 'Av. Marjory da Silva Prado, 1100 - Praia de Pernambuco, Guarujá - SP',
         city: 'Guarujá',
         state: 'SP',
-        lat: -23.97050,
-        lng: -46.19450,
+        lat: -23.96857,
+        lng: -46.18805,
         services: ['Programa Farmácia Popular', 'Descarte Consciente de Blisters e Remédios', 'Atendimento Farmacêutico'],
         opening_hours: {
           '0': { open: '08:00', close: '22:00' },

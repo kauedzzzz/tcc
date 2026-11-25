@@ -26,7 +26,7 @@
   <script src="https://accounts.google.com/gsi/client" async defer></script>
 
   <!-- Folha de Estilos do Projeto (Pasta CSS) -->
-  <link rel="stylesheet" href="css/styles.css" />
+  <link rel="stylesheet" href="css/styles.css?v=6" />
 </head>
 <body class="bg-gray-100 font-sans antialiased overflow-hidden select-none">
 
@@ -473,6 +473,23 @@
         🔄 <span class="hidden sm:inline">Buscar no OSM</span>
       </button>
 
+      <!-- Botão Barra de Comunidade e Alertas (Ícone SVG Vetorial) -->
+      <button
+        type="button"
+        id="btn-community-bar"
+        onclick="toggleCommunityBar()"
+        aria-expanded="false"
+        aria-controls="community-bar"
+        class="bg-white/95 backdrop-blur-md text-slate-800 hover:bg-gray-50 border border-gray-300 shadow-md px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition active:scale-95"
+        title="Abrir Barra de Comunidade e Alertas do Bairro"
+      >
+        <svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>
+        </svg>
+        <span>Comunidade</span>
+        <span id="community-bar-badge" class="px-1.5 py-0.5 text-[10px] font-extrabold rounded-full bg-emerald-100 text-emerald-800 leading-none">1</span>
+      </button>
+
       <!-- Botão Reportar Alerta -->
       <button 
         onclick="openReportModal()" 
@@ -520,6 +537,15 @@
     >
       🛰️ <span>Satélite</span>
     </button>
+    <button
+      onclick="togglePharmacyLayer()"
+      id="btn-toggle-pharmacies"
+      class="map-toggle-btn px-3.5 h-11 rounded-2xl font-extrabold text-xs border shadow-xl flex items-center justify-center gap-1.5 transition active:scale-95"
+      aria-pressed="true"
+      title="Mostrar/ocultar farmácias no mapa"
+    >
+      💊 <span>Farmácias</span>
+    </button>
     <button onclick="viewWholeGuaruja()" class="w-11 h-11 bg-emerald-600 hover:bg-emerald-700 active:scale-90 text-white rounded-2xl font-black text-base border border-emerald-700 shadow-lg flex items-center justify-center transition" title="Ver Guarujá Inteiro no Mapa">
       🗺️
     </button>
@@ -532,15 +558,36 @@
   </div>
 
   <!-- ==================================================================== -->
-  <!-- BOTÃO FLUTUANTE DE RE-GEOLOCALIZAÇÃO (FOCAR NA MINHA POSIÇÃO / PEREQUÊ) -->
+  <!-- BOTÃO FLUTUANTE "CENTRALIZAR EM MIM" (GPS EM TEMPO REAL)              -->
   <!-- ==================================================================== -->
   <button 
-    onclick="refreshUserLocation()" 
-    class="app-locate-btn absolute bottom-6 right-6 z-[1000] bg-white text-gray-800 w-11 h-11 rounded-2xl shadow-2xl border border-gray-200 hover:bg-gray-50 transition active:scale-95 flex items-center justify-center group"
-    title="Centralizar na minha localização no Bairro do Perequê / GPS"
+    id="btn-center-me"
+    onclick="centerOnMe()" 
+    class="app-locate-btn absolute bottom-6 right-6 z-[1000] bg-white text-gray-800 h-11 px-3.5 rounded-2xl shadow-2xl border border-gray-200 hover:bg-gray-50 transition active:scale-95 flex items-center justify-center gap-1.5 group"
+    title="Centralizar em mim (GPS em tempo real)"
+    aria-label="Centralizar em mim"
   >
-    <span class="text-xl group-hover:scale-125 transition-transform">🎯</span>
+    <span id="gps-status-dot" class="gps-status-dot" data-state="idle" aria-hidden="true"></span>
+    <span class="text-lg group-hover:scale-125 transition-transform" aria-hidden="true">🎯</span>
+    <span class="text-xs font-extrabold">Centralizar em mim</span>
   </button>
+
+  <!-- ==================================================================== -->
+  <!-- ALERTA AMIGÁVEL DE PERMISSÃO DE GPS (NEGADA / SEM HTTPS / SEM GPS)    -->
+  <!-- ==================================================================== -->
+  <div id="gps-alert" class="gps-alert hidden" role="alertdialog" aria-live="assertive" aria-labelledby="gps-alert-title" aria-describedby="gps-alert-text">
+    <div class="gps-alert__icon" aria-hidden="true">📍</div>
+    <div class="gps-alert__body">
+      <p id="gps-alert-title" class="gps-alert__title">Permita o acesso à sua localização</p>
+      <p id="gps-alert-text" class="gps-alert__text"></p>
+      <div class="gps-alert__actions">
+        <button id="gps-alert-retry" type="button" class="gps-alert__btn gps-alert__btn--primary" onclick="retryLiveGps()">Tentar novamente</button>
+        <button type="button" class="gps-alert__btn" onclick="openLocationSearchFromGpsAlert()">Digitar CEP / Rua</button>
+        <button type="button" class="gps-alert__btn gps-alert__btn--ghost" onclick="hideGpsAlert()">Agora não</button>
+      </div>
+    </div>
+    <button type="button" class="gps-alert__close" onclick="hideGpsAlert()" aria-label="Fechar aviso">✕</button>
+  </div>
 
   <!-- ==================================================================== -->
   <!-- MAPA INTERATIVO LEAFLET -->
@@ -659,6 +706,194 @@
         🔒 Entre na Conta para Avaliar este Local
       </button>
     </div>
+  </aside>
+
+  <!-- ==================================================================== -->
+  <!-- BARRA DE COMUNIDADE E ALERTAS (MINIMALISTA, 100% SVG, SEM EMOJIS)     -->
+  <!-- ==================================================================== -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+    <symbol id="cb-star" viewBox="0 0 24 24">
+      <path d="M12 2.9l2.8 5.68 6.27.91-4.54 4.42 1.07 6.24L12 17.2l-5.6 2.95 1.07-6.24-4.54-4.42 6.27-.91L12 2.9z"/>
+    </symbol>
+    <symbol id="cb-clip" viewBox="0 0 24 24">
+      <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+    </symbol>
+    <symbol id="cb-send" viewBox="0 0 24 24">
+      <path d="M21.5 2.5L10.5 13.5"/>
+      <path d="M21.5 2.5l-7 19-4-8-8-4 19-7z"/>
+    </symbol>
+    <symbol id="cb-close" viewBox="0 0 24 24">
+      <path d="M18 6L6 18M6 6l12 12"/>
+    </symbol>
+    <symbol id="cb-swap" viewBox="0 0 24 24">
+      <path d="M17 2l4 4-4 4"/>
+      <path d="M3 11V9a3 3 0 0 1 3-3h15"/>
+      <path d="M7 22l-4-4 4-4"/>
+      <path d="M21 13v2a3 3 0 0 1-3 3H3"/>
+    </symbol>
+    <symbol id="cb-user" viewBox="0 0 24 24">
+      <circle cx="12" cy="8" r="4"/>
+      <path d="M4 21a8 8 0 0 1 16 0"/>
+    </symbol>
+    <symbol id="cb-inbox" viewBox="0 0 24 24">
+      <path d="M22 12h-6l-2 3h-4l-2-3H2"/>
+      <path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>
+    </symbol>
+  </svg>
+
+  <aside
+    id="community-bar"
+    class="community-bar hidden fixed bottom-0 left-0 md:top-0 md:right-0 md:left-auto w-full md:w-[440px] max-h-[88vh] md:max-h-screen md:h-screen z-[1003] overflow-y-auto rounded-t-3xl md:rounded-none border-t md:border-t-0 md:border-l"
+    aria-labelledby="cb-header-title"
+  >
+    <header class="cb-header">
+      <div>
+        <h2 id="cb-header-title" class="cb-header__title">Comunidade e Alertas</h2>
+        <p class="cb-header__subtitle">Eventos, registros fotográficos e avaliações dos moradores</p>
+      </div>
+      <button type="button" class="cb-close-btn" onclick="closeCommunityBar()" aria-label="Fechar barra de comunidade">
+        <svg class="cb-icon" aria-hidden="true"><use href="#cb-close"/></svg>
+      </button>
+    </header>
+
+    <div class="cb-content">
+      <!-- 1. ÁREA DE PUBLICAÇÃO (NOVO EVENTO / ALERTA) -->
+      <section class="cb-card cb-composer" aria-labelledby="cb-composer-title">
+        <h3 id="cb-composer-title" class="cb-section-title">Novo evento ou alerta</h3>
+
+        <form id="cb-post-form" class="cb-composer-form" novalidate>
+          <div class="cb-composer-media">
+            <input type="file" id="cb-post-image" class="cb-file-input cb-sr-only" accept="image/*" aria-describedby="cb-image-hint">
+            <label for="cb-post-image" id="cb-dropzone" class="cb-dropzone">
+              <svg class="cb-icon" aria-hidden="true"><use href="#cb-clip"/></svg>
+              <span class="cb-dropzone__title">Anexar imagem do evento</span>
+              <span class="cb-dropzone__hint" id="cb-image-hint">JPG, PNG ou WebP (preview instantâneo)</span>
+            </label>
+
+            <figure id="cb-preview" class="cb-preview" hidden>
+              <img id="cb-preview-img" alt="Pré-visualização da imagem selecionada">
+              <div class="cb-preview__actions">
+                <button type="button" id="cb-preview-change" class="cb-chip-btn">
+                  <svg class="cb-icon" aria-hidden="true"><use href="#cb-swap"/></svg>
+                  <span>Trocar</span>
+                </button>
+                <button type="button" id="cb-preview-remove" class="cb-chip-btn cb-chip-btn--icon" aria-label="Remover imagem">
+                  <svg class="cb-icon" aria-hidden="true"><use href="#cb-close"/></svg>
+                </button>
+              </div>
+            </figure>
+          </div>
+
+          <div class="cb-field">
+            <label for="cb-post-details" class="cb-label">Detalhes e descrição do evento</label>
+            <textarea
+              id="cb-post-details"
+              class="cb-textarea"
+              rows="3"
+              maxlength="1000"
+              placeholder="Descreva o evento ou alerta comunitário: local, situação e observações."
+              aria-describedby="cb-details-count"
+            ></textarea>
+            <div class="cb-field-foot">
+              <span id="cb-details-count">0 / 1000</span>
+            </div>
+          </div>
+
+          <fieldset class="cb-field cb-fieldset">
+            <legend class="cb-label" id="cb-rating-label">Avaliação do evento</legend>
+            <div class="cb-rating-row">
+              <div id="cb-post-rating" class="cb-rating" role="radiogroup" aria-labelledby="cb-rating-label"></div>
+              <span id="cb-rating-caption" class="cb-rating-caption" aria-hidden="true">Selecione de 1 a 5</span>
+            </div>
+          </fieldset>
+
+          <p id="cb-post-error" class="cb-form-error" role="alert" hidden></p>
+
+          <div class="cb-composer-actions">
+            <button type="submit" id="cb-post-submit" class="cb-btn cb-btn--primary">Publicar</button>
+          </div>
+        </form>
+      </section>
+
+      <!-- 2. FEED DA COMUNIDADE (CARDS) -->
+      <section class="cb-feed-section" aria-labelledby="cb-feed-title">
+        <div class="cb-feed-head">
+          <h3 id="cb-feed-title" class="cb-section-title">Feed da comunidade</h3>
+          <span id="cb-feed-count" class="cb-muted"></span>
+        </div>
+
+        <div id="cb-feed-empty" class="cb-empty" hidden>
+          <svg class="cb-icon" aria-hidden="true"><use href="#cb-inbox"/></svg>
+          <span>Nenhum alerta publicado ainda.</span>
+        </div>
+
+        <ol id="cb-feed" class="cb-feed" aria-live="polite"></ol>
+      </section>
+    </div>
+
+    <!-- Template do Card de Publicação -->
+    <template id="cb-tpl-post">
+      <li class="cb-post">
+        <article class="cb-card cb-post-card">
+          <figure class="cb-post-media">
+            <img class="cb-post-img" alt="" loading="lazy" decoding="async">
+          </figure>
+
+          <div class="cb-post-body">
+            <div class="cb-post-meta">
+              <span class="cb-stars-static" role="img"></span>
+              <time class="cb-post-time cb-muted"></time>
+            </div>
+            <p class="cb-post-details"></p>
+          </div>
+
+          <!-- 3. SISTEMA DE COMENTÁRIOS NO CARD -->
+          <section class="cb-comments">
+            <h4 class="cb-comments-title">
+              <span>Comentários dos moradores</span>
+              <span class="cb-comments-count">0</span>
+            </h4>
+
+            <form class="cb-comment-form" novalidate>
+              <label class="cb-comment-label cb-sr-only">Adicionar comentário</label>
+              <div class="cb-comment-box">
+                <textarea
+                  class="cb-comment-input"
+                  rows="2"
+                  maxlength="225"
+                  placeholder="Escreva um comentário sobre este alerta..."
+                ></textarea>
+                <button type="submit" class="cb-send-btn" aria-label="Enviar comentário">
+                  <svg class="cb-icon" aria-hidden="true"><use href="#cb-send"/></svg>
+                </button>
+              </div>
+              <div class="cb-comment-meta">
+                <span class="cb-comment-error" role="alert"></span>
+                <span class="cb-counter">0 / 225</span>
+              </div>
+            </form>
+
+            <ul class="cb-comment-list"></ul>
+          </section>
+        </article>
+      </li>
+    </template>
+
+    <!-- Template de Comentário -->
+    <template id="cb-tpl-comment">
+      <li class="cb-comment">
+        <span class="cb-avatar" aria-hidden="true">
+          <svg class="cb-icon"><use href="#cb-user"/></svg>
+        </span>
+        <div class="cb-comment-content">
+          <div class="cb-comment-head">
+            <span class="cb-comment-author">Morador</span>
+            <time class="cb-comment-time cb-muted"></time>
+          </div>
+          <p class="cb-comment-text"></p>
+        </div>
+      </li>
+    </template>
   </aside>
 
   <!-- ==================================================================== -->
@@ -958,7 +1193,10 @@
 
   <!-- Script Principal da Aplicação (Pasta JS) -->
   <script src="js/config.js"></script>
-  <script src="js/app.js"></script>
+  <script src="js/map/live-gps.js?v=6"></script>
+  <script src="js/map/pharmacies-data.js?v=6"></script>
+  <script src="js/map/pharmacy-layer.js?v=6"></script>
+  <script src="js/app.js?v=6"></script>
 </body>
 </html>
 
