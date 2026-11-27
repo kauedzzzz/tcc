@@ -122,6 +122,7 @@
 
   global.CuidacaoPharmacyLayer = Object.freeze({
     create: create,
+    buildIcon: buildIcon,
     buildPopupHtml: buildPopupHtml
   });
 })(window);

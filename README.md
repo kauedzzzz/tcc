@@ -36,11 +36,15 @@ cd /caminho/para/tcc
 npm start
 ```
 
-Outras opções de execução:
+Outras opções de execução e automação:
 
 ```bash
 npm run dev          # Inicia com --watch (reinicia automaticamente ao editar o servidor)
 npm run start:env    # Carrega variáveis do arquivo .env (Node 20.6+)
+npm run build        # Compila CSS estático (Tailwind), valida SHELL_ASSETS e atualiza hash do Service Worker
+npm run doctor       # Diagnóstico completo: Node, .env, data.json, assets PWA e node --check
+npm run sync:osm     # Job CLI/cron: sincroniza OpenStreetMap, clima/Aedes (Open-Meteo) e balneabilidade
+npm test             # Executa suíte de testes unitários e de integração HTTP (node:test)
 ./run.sh             # Script auxiliar de inicialização
 ```
 
@@ -54,26 +58,40 @@ npm run start:env    # Carrega variáveis do arquivo .env (Node 20.6+)
 .
 ├── server/
 │   ├── server.js            # Servidor HTTP nativo, API REST v1 e entrega de arquivos estáticos
-│   ├── database.js          # Camada de persistência em JSON (data.json) e seed inicial
-│   ├── schema.sql           # Schema SQL de referência
+│   ├── database.js          # Orquestração de persistência (JsonRepository | PostgresRepository)
+│   ├── repositories/        # Adapters JsonRepository (backups .gz) e PostgresRepository (PostGIS)
 │   └── data.json            # Banco de dados local em JSON (gerado/atualizado em runtime)
 ├── public/
-│   ├── index.html           # Interface principal (mapa e painel)
-│   ├── comunidade.html      # Página de comunidade e alertas ambientais
+│   ├── index.html           # Interface principal (mapa interativo, filtros granulares, cluster e calor)
+│   ├── comunidade.html      # Página dedicada de comunidade e alertas integrada à API REST
+│   ├── painel.html          # Painel analítico One Health e exportação GeoJSON (QGIS)
 │   ├── manifest.json        # Manifesto PWA
-│   ├── sw.js                # Service Worker (v6) para cache e suporte offline
+│   ├── sw.js                # Service Worker 100% offline-first (assets validados no build)
 │   ├── css/
-│   │   └── styles.css       # Estilos da aplicação
+│   │   ├── tailwind.min.css # Folha utilitária compilada estaticamente (sem CDN JIT)
+│   │   └── styles.css       # Estilos institucionais Mata Atlântica & Guarujá
+│   ├── vendor/              # Assets locais do Leaflet, MarkerCluster e Leaflet.heat
+│   ├── images/              # Imagens locais otimizadas (WebP/JPG)
 │   ├── js/
 │   │   ├── app.js           # Lógica principal do frontend
 │   │   ├── config.js        # Configuração de URL da API (web vs Capacitor)
+│   │   ├── community/
+│   │   │   └── feed.js      # Módulo compartilhado de feed, comentários e fila offline
 │   │   └── map/
 │   │       ├── live-gps.js         # Módulo de GPS em tempo real e animação do marcador
 │   │       ├── pharmacies-data.js  # Dados georreferenciados das farmácias do Guarujá/SP
-│   │       └── pharmacy-layer.js   # Camada Leaflet e popups de farmácias
+│   │       └── pharmacy-layer.js   # Utilitários da camada unificada de farmácias (selo FP)
 │   └── icons/               # Ícones do PWA e app nativo
 ├── database/
-│   └── schema.sql           # Modelo alvo para PostgreSQL + PostGIS
+│   └── schema.sql           # Fonte única oficial DDL para PostgreSQL + PostGIS
+├── scripts/
+│   ├── build.js             # Build estático CSS + validação e versionamento do Service Worker
+│   ├── doctor.js            # Verificador de integridade de ambiente, dados, PWA e sintaxe
+│   └── sync-osm-guaruja.js  # Job CLI/cron OSM + clima/Aedes (Open-Meteo) + balneabilidade
+├── tests/
+│   ├── unit.test.js         # Testes unitários nativos (node:test)
+│   └── integration.test.js  # Testes de integração HTTP em portas efêmeras e DATA_DIR isolado
+├── .github/workflows/ci.yml # Pipeline CI/CD (testes, doctor e build opcional de APK Android)
 ├── capacitor.config.json    # Configuração do Capacitor (br.com.cuidacao.app)
 ├── package.json             # Metadados e scripts npm
 ├── .env.example             # Modelo de variáveis de ambiente
@@ -96,6 +114,9 @@ Copie `.env.example` para `.env` e ajuste conforme o ambiente:
 | `TRUST_PROXY` | `1` quando atrás de proxy reverso/CDN (Render, Railway, Nginx), garantindo leitura correta do IP no rate limit. |
 | `SEED_DEMO_DATA` | `1` cria usuário e alertas de demonstração em produção (em desenvolvimento já são criados). |
 | `KEEP_DEMO_RATINGS` | `1` mantém as notas fictícias do seed inicial (útil em apresentações). |
+| `DB_DRIVER` | `json` (padrão local sem dependências externas) ou `postgres` (usa `PostgresRepository` + PostGIS). |
+| `DATABASE_URL` | String de conexão PostgreSQL/PostGIS opcional quando `DB_DRIVER=postgres`. |
+| `ADMIN_EMAILS` | Lista opcional de e-mails separados por vírgula promovidos automaticamente a `admin`. |
 
 ---
 
@@ -103,20 +124,26 @@ Copie `.env.example` para `.env` e ajuste conforme o ambiente:
 
 | Método | Rota | Descrição |
 |---|---|---|
-| `GET` | `/api/v1/health` | Status de saúde do servidor |
-| `GET` | `/api/v1/locations` | Lista locais (unidades de saúde, farmácias, ecopontos) |
+| `GET` | `/api/v1/health` | Status de saúde do servidor e driver ativo |
+| `GET` | `/api/v1/locations` | Lista locais (SUS, Farmácias `cat-3`, Ecopontos, Parques e Zoonoses `cat-6`) |
 | `GET` | `/api/v1/locations/:id` | Detalhes de um local específico |
-| `POST` | `/api/v1/locations/:id/reviews` | Registra avaliação para um local (requer autenticação) |
-| `GET` | `/api/v1/reports` | Lista alertas ambientais/comunitários |
-| `POST` | `/api/v1/reports` | Cria um novo alerta (requer autenticação) |
-| `GET` | `/api/v1/geo/search` | Busca de endereço/CEP |
+| `POST` | `/api/v1/locations/:id/reviews` | Registra avaliação 1x/dia para um local (requer autenticação) |
+| `GET` | `/api/v1/reports` | Lista alertas ambientais/comunitários enriquecidos (UBS e Ecoponto próximos) |
+| `POST` | `/api/v1/reports` | Cria alerta com deduplicação em 50m e imagem opcional (requer autenticação) |
+| `POST` | `/api/v1/reports/:id/comments` | Adiciona comentário em alerta da comunidade (requer autenticação) |
+| `POST` | `/api/v1/reports/:id/confirm` | Confirma alerta comunitário ("Eu também vi" — 1x/usuário) |
+| `PATCH` | `/api/v1/reports/:id/status` | Transição de status RBAC (`agent`/`admin`: `pending` → `in_analysis` → `resolved`/`rejected`) |
+| `GET` | `/api/v1/uploads/:filename` | Entrega segura das imagens enviadas pela comunidade |
+| `GET` | `/api/v1/analytics/summary` | Indicadores agregados One Health, rankings e correlação territorial |
+| `GET` | `/api/v1/export/reports.geojson` | Exportação GeoJSON compatível com SIG / QGIS |
+| `GET` | `/api/v1/geo/search` | Busca centralizada de endereço e CEP (ViaCEP + Gazetteer + Nominatim com cache) |
 | `GET` | `/api/v1/geo/reverse` | Geocodificação reversa por latitude/longitude |
-| `GET` | `/api/v1/geo/ip` | Localização aproximada por IP |
+| `GET` | `/api/v1/geo/ip` | Localização aproximada por IP (ancorada no Perequê) |
 | `GET` | `/api/v1/auth/google/config` | Configuração pública do login Google |
-| `POST` | `/api/v1/auth/register` | Cadastro de usuário |
+| `POST` | `/api/v1/auth/register` | Cadastro de usuário (`citizen`) |
 | `POST` | `/api/v1/auth/login` | Login por e-mail e senha |
 | `POST` | `/api/v1/auth/google` | Login via token Google |
-| `POST` | `/api/v1/seed/osm-live` | Atualização/seed de dados |
+| `POST` | `/api/v1/seed/osm-live` | Importação sob demanda do OpenStreetMap |
 
 ---
 
@@ -156,4 +183,4 @@ Recursos como **Geolocalização (GPS)** e **Service Worker (PWA)** exigem **HTT
 
 ### Observações sobre o App Nativo
 - **Login com Google em WebView:** o Google bloqueia fluxo OAuth web dentro de WebViews. No app empacotado, utilize login por e-mail/senha ou integre um plugin nativo de Google Sign-In para Capacitor.
-- **Tiles de mapa e CDNs:** o frontend carrega Leaflet/Tailwind via CDN na primeira abertura (com cache posterior pelo Service Worker) e utiliza tiles públicos (OpenStreetMap/Esri). Para distribuição em grande escala em lojas, considere hospedar os assets localmente e utilizar um provedor de tiles com chave de API.
+- **Assets locais e tiles de mapa:** o frontend serve CSS utilitário compilado estaticamente (`public/css/tailwind.min.css`), Leaflet, MarkerCluster, Leaflet.heat e imagens locais diretamente de `public/`, garantindo funcionamento offline já no primeiro acesso e no APK. Os tiles do mapa (OpenStreetMap/Esri) visitados são cacheados localmente pelo Service Worker.

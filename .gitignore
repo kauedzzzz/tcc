@@ -3,6 +3,8 @@ node_modules/
 server/data.json
 server/data.json.tmp
 server/.jwt-secret
+server/backups/
+server/uploads/
 android/
 ios/
 .DS_Store

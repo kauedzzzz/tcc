@@ -15,20 +15,24 @@
   <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 
-  <!-- Tailwind CSS via CDN -->
-  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- CSS Utilitário Compilado Estaticamente (PWA 100% Offline-First, sem CDN JIT) -->
+  <link rel="stylesheet" href="css/tailwind.min.css" />
   
-  <!-- Leaflet CSS & JS -->
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <!-- Leaflet & Plugins Servidos Localmente (public/vendor/) -->
+  <link rel="stylesheet" href="vendor/leaflet/leaflet.css" />
+  <link rel="stylesheet" href="vendor/markercluster/MarkerCluster.css" />
+  <link rel="stylesheet" href="vendor/markercluster/MarkerCluster.Default.css" />
+  <script src="vendor/leaflet/leaflet.js"></script>
+  <script src="vendor/markercluster/leaflet.markercluster.js"></script>
+  <script src="vendor/leaflet-heat/leaflet-heat.js"></script>
 
-  <!-- Google Identity Services (Login com Conta do Google) -->
+  <!-- Google Identity Services (Opcional - Login com Conta do Google quando online) -->
   <script src="https://accounts.google.com/gsi/client" async defer></script>
 
   <!-- Folha de Estilos do Projeto (Pasta CSS) -->
-  <link rel="stylesheet" href="css/styles.css?v=6" />
+  <link rel="stylesheet" href="css/styles.css?v=7" />
 </head>
-<body class="bg-gray-100 font-sans antialiased overflow-hidden select-none">
+<body class="bg-gray-100 font-sans antialiased overflow-hidden">
 
   <!-- ==================================================================== -->
   <!-- CONTAINER FLUTUANTE DE NOTIFICAÇÕES TOAST -->
@@ -68,11 +72,12 @@
       <div class="mt-6">
         <button
           type="button"
+          id="btn-home-explore"
           onclick="enterAsGuest()"
           class="w-full py-3.5 px-5 bg-emerald-600 hover:bg-emerald-700 active:scale-[0.99] text-white text-sm font-black rounded-2xl shadow-lg shadow-emerald-600/30 transition flex items-center justify-center gap-2.5"
         >
           <span class="text-base">🗺️</span>
-          <span>Começar a Explorar o Mapa</span>
+          <span id="btn-home-explore-label">Começar a Explorar o Mapa</span>
         </button>
       </div>
 
@@ -139,14 +144,14 @@
   <!-- ==================================================================== -->
   <!-- MODAL DEDICADO: SOBRE O PROJETO & EQUIPE DE DESENVOLVIMENTO (TCC 2026) -->
   <!-- ==================================================================== -->
-  <div id="modal-about" class="hidden fixed inset-0 z-[3600] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+  <div id="modal-about" role="dialog" aria-modal="true" aria-labelledby="modal-about-title" class="hidden fixed inset-0 z-[3600] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
     <div class="bg-white rounded-3xl w-full max-w-lg shadow-2xl border border-gray-100 overflow-hidden max-h-[90vh] flex flex-col">
       
       <!-- Cabeçalho do Modal -->
       <div class="px-6 py-4 bg-gradient-to-r from-emerald-900 via-emerald-800 to-teal-900 text-white flex items-center justify-between">
         <div class="flex items-center gap-2">
           <span class="text-lg">🌿</span>
-          <h3 class="text-sm sm:text-base font-black tracking-tight">Sobre o Projeto CuidAção - TCC 2026</h3>
+          <h3 id="modal-about-title" class="text-sm sm:text-base font-black tracking-tight">Sobre o Projeto CuidAção - TCC 2026</h3>
         </div>
         <button
           type="button"
@@ -237,7 +242,7 @@
   <!-- ==================================================================== -->
   <!-- MODAL DE AUTENTICAÇÃO GOOGLE (ESCOLHA SUA CONTA GOOGLE / OAUTH) -->
   <!-- ==================================================================== -->
-  <div id="modal-google-account" class="hidden fixed inset-0 z-[3500] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+  <div id="modal-google-account" role="dialog" aria-modal="true" aria-labelledby="modal-google-title" class="hidden fixed inset-0 z-[3500] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
     <div class="bg-white rounded-3xl w-full max-w-md shadow-2xl border border-gray-200 overflow-hidden">
       <!-- Cabeçalho Estilo Google Identity -->
       <div class="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
@@ -254,7 +259,7 @@
       </div>
 
       <div class="p-6">
-        <h3 class="text-lg font-bold text-gray-900 text-center">Escolha uma conta</h3>
+        <h3 id="modal-google-title" class="text-lg font-bold text-gray-900 text-center">Escolha uma conta</h3>
         <p class="text-xs text-gray-500 text-center mt-0.5">para prosseguir para <b class="text-emerald-700">CuidAção</b> <span class="text-[11px] text-gray-400">(Saúde Única • Guarujá/SP)</span></p>
 
         <!-- Lista de Contas Google Salvas no Navegador -->
@@ -319,14 +324,14 @@
   <!-- ==================================================================== -->
   <!-- BARRA SUPERIOR DE FILTROS & AÇÕES (FLUTUANTE) -->
   <!-- ==================================================================== -->
-  <header class="app-header absolute top-4 left-4 right-4 z-[1000] flex flex-col md:flex-row items-stretch md:items-center justify-between gap-2.5 pointer-events-none">
+  <header class="app-header absolute top-3 sm:top-4 left-3 sm:left-4 right-3 sm:right-4 z-[1000] flex flex-col md:flex-row items-stretch md:items-center justify-between gap-1.5 sm:gap-2.5 pointer-events-none">
     
-    <div class="bg-white/95 backdrop-blur-md shadow-xl rounded-2xl p-2 flex flex-wrap items-center gap-1.5 border border-gray-200/80 pointer-events-auto">
+    <div class="app-header-main bg-white/95 backdrop-blur-md shadow-xl rounded-2xl p-1.5 sm:p-2 flex flex-wrap items-center gap-1 sm:gap-1.5 border border-gray-200/80 pointer-events-auto">
       
       <!-- Logo CuidAção (Clicável para abrir a Tela de Início) -->
-      <button onclick="showHomeScreen()" title="Voltar para a Tela de Início do CuidAção" class="flex items-center gap-1.5 px-2 border-r border-gray-200 hover:opacity-80 transition">
+      <button onclick="showHomeScreen()" title="Voltar para a Tela de Início do CuidAção" class="flex items-center gap-1.5 px-1.5 sm:px-2 border-r border-gray-200 hover:opacity-80 transition">
         <span class="text-emerald-600 font-black text-sm tracking-tight">CuidAção</span>
-        <span class="hidden sm:inline text-[10px] bg-emerald-100 text-emerald-800 font-bold px-1.5 py-0.5 rounded">Saúde Única (One Health) • Guarujá/SP</span>
+        <span class="hidden lg:inline text-[10px] bg-emerald-100 text-emerald-800 font-bold px-1.5 py-0.5 rounded">Saúde Única (One Health) • Guarujá/SP</span>
       </button>
 
       <!-- Badge de Localização Atual (Focado no Bairro do Perequê / Clicável para Calibrar) -->
@@ -334,9 +339,9 @@
         onclick="openLocationModal()" 
         id="location-badge" 
         title="Clique para calibrar endereço/CEP ou alternar bairro do Guarujá"
-        class="flex items-center gap-1.5 px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-xl text-xs font-bold transition cursor-pointer active:scale-95"
+        class="flex items-center gap-1 px-2 sm:px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-xl text-[11px] sm:text-xs font-bold transition cursor-pointer active:scale-95 max-w-[62vw] sm:max-w-none truncate"
       >
-        📍 <span>Bairro do Perequê, Guarujá - SP</span>
+        📍 <span class="truncate">Bairro do Perequê, Guarujá - SP</span>
       </button>
 
       <!-- Seletor Rápido de Bairros do Guarujá Inteiro (Com Perequê em Destaque) -->
@@ -344,7 +349,7 @@
         id="neighborhood-select"
         onchange="jumpToNeighborhood(this.value)"
         title="Navegar diretamente para qualquer bairro do Guarujá/SP"
-        class="bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold px-2.5 py-1.5 rounded-xl border border-emerald-700 focus:outline-none cursor-pointer transition shadow-sm"
+        class="hidden sm:inline-block bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold px-2.5 py-1.5 rounded-xl border border-emerald-700 focus:outline-none cursor-pointer transition shadow-sm"
       >
         <optgroup label="📍 Região do Perequê & Leste/Norte">
           <option value="-23.93680,-46.18250,Bairro do Perequê, Guarujá - SP" selected>📍 Bairro do Perequê (Atual)</option>
@@ -398,25 +403,28 @@
         📌 <span class="hidden xl:inline">Cravar no Mapa</span>
       </button>
 
-      <!-- Botões de Camadas -->
+      <!-- Botões de Domínio One Health -->
       <button onclick="setFilter('all')" id="btn-filter-all" class="filter-tab px-2.5 py-1.5 rounded-xl text-xs font-bold bg-gray-900 text-white transition">
         Todos
       </button>
       <button onclick="setFilter('health')" id="btn-filter-health" class="filter-tab px-2.5 py-1.5 rounded-xl text-xs font-bold text-gray-700 hover:bg-gray-100 transition">
         🏥 Saúde
       </button>
+      <button onclick="setFilter('animal')" id="btn-filter-animal" class="filter-tab px-2.5 py-1.5 rounded-xl text-xs font-bold text-gray-700 hover:bg-gray-100 transition">
+        🐾 Saúde Animal
+      </button>
       <button onclick="setFilter('environment')" id="btn-filter-env" class="filter-tab px-2.5 py-1.5 rounded-xl text-xs font-bold text-gray-700 hover:bg-gray-100 transition">
         ♻️ Sustentabilidade
       </button>
 
       <!-- Barra de Pesquisa com Suporte a CEP (ViaCEP + Nominatim) e Filtro Rápido -->
-      <div class="map-search-wrapper relative flex-1 min-w-[210px] sm:min-w-[260px]">
+      <div class="map-search-wrapper relative flex-1 min-w-[200px] sm:min-w-[260px]">
         <div class="map-search-bar flex items-center bg-gray-100 focus-within:bg-white rounded-xl border border-transparent focus-within:border-emerald-500 transition overflow-hidden">
           <span class="pl-2.5 pr-1 text-gray-400 text-xs select-none">🔍</span>
           <input 
             type="text" 
             id="search-input" 
-            placeholder="Digite um CEP (ex: 01001-000) ou busque UBS..." 
+            placeholder="Digite um CEP (ex: 11446-000) ou busque UBS, UPA 24h..." 
             oninput="handleSearch(this.value)"
             onkeydown="if(event.key==='Enter'){event.preventDefault();handleCepSearchSubmit();}"
             aria-label="Pesquisar por CEP ou unidade"
@@ -426,7 +434,7 @@
             type="button"
             id="btn-cep-search"
             onclick="handleCepSearchSubmit()"
-            title="Buscar CEP no mapa (ou pressione Enter)"
+            title="Buscar CEP ou unidade no mapa (ou pressione Enter)"
             class="map-search-btn px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white text-[11px] font-bold transition shrink-0 flex items-center gap-1"
           >
             <span>Buscar</span>
@@ -442,32 +450,42 @@
       </div>
 
       <!-- Seletor de Raio (Guarujá Inteiro 25 km selecionado por padrão) -->
-      <select id="radius-select" onchange="changeRadius(this.value)" class="bg-gray-100 text-xs font-semibold px-2 py-1.5 rounded-xl border border-transparent focus:outline-none">
+      <select id="radius-select" onchange="changeRadius(this.value)" class="bg-gray-100 text-[11px] sm:text-xs font-semibold px-2 py-1.5 rounded-xl border border-transparent focus:outline-none">
         <option value="3000">Raio: 3 km (Bairro)</option>
         <option value="8000">Raio: 8 km (Entorno)</option>
         <option value="15000">Raio: 15 km (Região)</option>
         <option value="25000" selected>Guarujá Inteiro (25 km)</option>
       </select>
+
+      <!-- Filtros Granulares One Health (UBS/USAFA, UPA/Hospital, Farmácia Popular, Ecoponto, Parques, Zoonoses, Aberto agora) -->
+      <div class="w-full pt-1 border-t border-gray-100 flex items-center gap-1 overflow-x-auto" role="group" aria-label="Filtros granulares por tipo e funcionamento">
+        <button type="button" onclick="setCategoryFilter('cat-1')" data-cat-chip="cat-1" class="granular-chip px-2 py-1 rounded-lg text-[11px] font-bold bg-gray-100 text-gray-700 hover:bg-emerald-50 hover:text-emerald-800 whitespace-nowrap transition">🏥 UBS/USAFA</button>
+        <button type="button" onclick="setCategoryFilter('cat-2')" data-cat-chip="cat-2" class="granular-chip px-2 py-1 rounded-lg text-[11px] font-bold bg-gray-100 text-gray-700 hover:bg-red-50 hover:text-red-800 whitespace-nowrap transition">🚑 UPA/Hospital</button>
+        <button type="button" onclick="setCategoryFilter('farmacia_popular')" data-cat-chip="farmacia_popular" class="granular-chip px-2 py-1 rounded-lg text-[11px] font-bold bg-gray-100 text-gray-700 hover:bg-violet-50 hover:text-violet-800 whitespace-nowrap transition">💊 Farmácia Popular</button>
+        <button type="button" onclick="setCategoryFilter('cat-4')" data-cat-chip="cat-4" class="granular-chip px-2 py-1 rounded-lg text-[11px] font-bold bg-gray-100 text-gray-700 hover:bg-blue-50 hover:text-blue-800 whitespace-nowrap transition">♻️ Ecoponto</button>
+        <button type="button" onclick="setCategoryFilter('cat-5')" data-cat-chip="cat-5" class="granular-chip px-2 py-1 rounded-lg text-[11px] font-bold bg-gray-100 text-gray-700 hover:bg-emerald-50 hover:text-emerald-800 whitespace-nowrap transition">🌳 Parques</button>
+        <button type="button" onclick="setCategoryFilter('cat-6')" data-cat-chip="cat-6" class="granular-chip px-2 py-1 rounded-lg text-[11px] font-bold bg-gray-100 text-gray-700 hover:bg-teal-50 hover:text-teal-800 whitespace-nowrap transition">🐾 Zoonoses</button>
+        <button type="button" id="btn-filter-open-now" onclick="toggleOpenNowFilter()" aria-pressed="false" class="px-2 py-1 rounded-lg text-[11px] font-bold bg-gray-100 text-gray-700 hover:bg-emerald-50 hover:text-emerald-800 whitespace-nowrap transition ml-auto">🕒 Aberto agora</button>
+      </div>
     </div>
 
     <!-- Barra de Ações -->
-    <div class="flex items-center gap-2 pointer-events-auto self-end md:self-auto">
-
-      <!-- Botão Alternador de Camada (Mapa Vetorial <-> Satélite HD Estilo Google Earth) -->
-      <button
-        onclick="toggleMapStyle()"
-        id="btn-map-style-toggle"
-        class="bg-white/95 backdrop-blur-md text-slate-800 hover:bg-gray-50 border border-gray-300 shadow-md px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition active:scale-95"
-        title="Alternar entre Mapa Vetorial de Ruas e Visão Orbital de Satélite HD (Estilo Google Earth)"
+    <div class="app-header-actions flex items-center gap-1.5 sm:gap-2 pointer-events-auto self-end md:self-auto">
+      
+      <!-- Link Painel Analítico One Health -->
+      <a
+        href="painel.html"
+        class="bg-white/95 backdrop-blur-md text-teal-800 hover:bg-teal-50 border border-teal-300 shadow-md px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition active:scale-95"
+        title="Abrir Painel Analítico One Health e Exportação GeoJSON"
       >
-        🛰️ <span>Satélite</span>
-      </button>
+        📊 <span class="hidden sm:inline">Painel</span>
+      </a>
       
       <!-- Botão Sincronizar OpenStreetMap -->
       <button 
         onclick="syncOsmLive()" 
         id="btn-sync-osm"
-        class="bg-white/95 backdrop-blur-md text-emerald-700 hover:bg-emerald-50 border border-emerald-300 shadow-md px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition active:scale-95"
+        class="bg-white/95 backdrop-blur-md text-emerald-700 hover:bg-emerald-50 border border-emerald-300 shadow-md px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition active:scale-95"
         title="Buscar mais postos e farmácias reais no OpenStreetMap"
       >
         🔄 <span class="hidden sm:inline">Buscar no OSM</span>
@@ -480,22 +498,22 @@
         onclick="toggleCommunityBar()"
         aria-expanded="false"
         aria-controls="community-bar"
-        class="bg-white/95 backdrop-blur-md text-slate-800 hover:bg-gray-50 border border-gray-300 shadow-md px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition active:scale-95"
+        class="bg-white/95 backdrop-blur-md text-slate-800 hover:bg-gray-50 border border-gray-300 shadow-md px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition active:scale-95"
         title="Abrir Barra de Comunidade e Alertas do Bairro"
       >
         <svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>
         </svg>
-        <span>Comunidade</span>
+        <span class="hidden sm:inline">Comunidade</span>
         <span id="community-bar-badge" class="px-1.5 py-0.5 text-[10px] font-extrabold rounded-full bg-emerald-100 text-emerald-800 leading-none">1</span>
       </button>
 
       <!-- Botão Reportar Alerta -->
       <button 
         onclick="openReportModal()" 
-        class="bg-amber-500 hover:bg-amber-600 text-white shadow-lg px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition active:scale-95"
+        class="bg-amber-500 hover:bg-amber-600 text-white shadow-lg px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl text-xs font-bold flex items-center gap-1 sm:gap-1.5 transition active:scale-95"
       >
-        ⚠️ Reportar Alerta
+        ⚠️ <span class="hidden xs:inline sm:inline">Alerta</span>
       </button>
 
       <!-- Auth Box -->
@@ -545,6 +563,15 @@
       title="Mostrar/ocultar farmácias no mapa"
     >
       💊 <span>Farmácias</span>
+    </button>
+    <button
+      onclick="toggleHeatmapLayer()"
+      id="btn-toggle-heatmap"
+      class="map-toggle-btn px-3.5 h-11 rounded-2xl font-extrabold text-xs border shadow-xl flex items-center justify-center gap-1.5 transition active:scale-95"
+      aria-pressed="false"
+      title="Ativar/desativar Mapa de Calor de focos de dengue e resíduos"
+    >
+      🔥 <span>Calor</span>
     </button>
     <button onclick="viewWholeGuaruja()" class="w-11 h-11 bg-emerald-600 hover:bg-emerald-700 active:scale-90 text-white rounded-2xl font-black text-base border border-emerald-700 shadow-lg flex items-center justify-center transition" title="Ver Guarujá Inteiro no Mapa">
       🗺️
@@ -630,7 +657,7 @@
         <span id="side-distance" class="text-xs font-semibold px-2.5 py-1 rounded-md bg-emerald-50 text-emerald-800 border border-emerald-200">
           📍 -- metros
         </span>
-        <a id="side-gmaps-link" href="#" target="_blank" class="text-xs font-bold px-2.5 py-1 rounded-md bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100 transition flex items-center gap-1">
+        <a id="side-gmaps-link" href="#" target="_blank" rel="noopener noreferrer" class="text-xs font-bold px-2.5 py-1 rounded-md bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100 transition flex items-center gap-1">
           🗺️ Abrir no Google Maps
         </a>
       </div>
@@ -639,6 +666,21 @@
       <div class="mt-5">
         <h3 class="text-xs font-bold text-gray-400 uppercase tracking-wider">Serviços Oferecidos</h3>
         <div id="side-services" class="flex flex-wrap gap-1.5 mt-2"></div>
+      </div>
+
+      <!-- Grade Semanal de Horários de Funcionamento -->
+      <div class="mt-5 border-t border-gray-100 pt-4">
+        <h3 class="text-xs font-bold text-gray-400 uppercase tracking-wider">Grade Semanal de Horários</h3>
+        <div id="side-weekly-hours" class="mt-2 grid grid-cols-1 gap-1 text-xs"></div>
+      </div>
+
+      <!-- Atalhos Rápidos de Emergência Pública -->
+      <div class="mt-4 p-3 rounded-2xl bg-red-50/60 border border-red-100">
+        <p class="text-[10px] font-extrabold uppercase tracking-wider text-red-800 mb-2">🚨 Atalhos de Emergência • Guarujá</p>
+        <div class="grid grid-cols-2 gap-2 text-xs font-bold">
+          <a href="tel:192" class="py-2 px-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-center shadow-sm transition">🚑 SAMU 192</a>
+          <a href="tel:199" class="py-2 px-2.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-center shadow-sm transition">🛟 Defesa Civil 199</a>
+        </div>
       </div>
 
       <!-- Métricas Comunitárias CuidAção (100% Públicas e Sempre Visíveis) -->
@@ -750,6 +792,9 @@
       <div>
         <h2 id="cb-header-title" class="cb-header__title">Comunidade e Alertas</h2>
         <p class="cb-header__subtitle">Eventos, registros fotográficos e avaliações dos moradores</p>
+        <a href="comunidade.html" class="inline-flex items-center gap-1 mt-1.5 text-xs font-bold text-emerald-700 hover:underline">
+          <span>Abrir página completa da Comunidade ↗</span>
+        </a>
       </div>
       <button type="button" class="cb-close-btn" onclick="closeCommunityBar()" aria-label="Fechar barra de comunidade">
         <svg class="cb-icon" aria-hidden="true"><use href="#cb-close"/></svg>
@@ -763,11 +808,11 @@
 
         <form id="cb-post-form" class="cb-composer-form" novalidate>
           <div class="cb-composer-media">
-            <input type="file" id="cb-post-image" class="cb-file-input cb-sr-only" accept="image/*" aria-describedby="cb-image-hint">
+            <input type="file" id="cb-post-image" class="cb-file-input cb-sr-only" accept="image/jpeg,image/png,image/webp" aria-describedby="cb-image-hint">
             <label for="cb-post-image" id="cb-dropzone" class="cb-dropzone">
               <svg class="cb-icon" aria-hidden="true"><use href="#cb-clip"/></svg>
-              <span class="cb-dropzone__title">Anexar imagem do evento</span>
-              <span class="cb-dropzone__hint" id="cb-image-hint">JPG, PNG ou WebP (preview instantâneo)</span>
+              <span class="cb-dropzone__title">Anexar imagem (opcional)</span>
+              <span class="cb-dropzone__hint" id="cb-image-hint">JPG, PNG ou WebP — ou publique alerta rápido só com texto</span>
             </label>
 
             <figure id="cb-preview" class="cb-preview" hidden>
@@ -785,6 +830,18 @@
           </div>
 
           <div class="cb-field">
+            <label for="cb-post-type" class="cb-label">Categoria do alerta</label>
+            <select id="cb-post-type" class="w-full p-2 text-xs border border-gray-300 rounded-lg bg-white text-gray-800">
+              <option value="foco_dengue">Foco de Dengue / Água Parada</option>
+              <option value="descarte_irregular">Descarte Irregular de Resíduos</option>
+              <option value="terreno_baldio">Terreno Baldio / Vegetação Densa</option>
+              <option value="esgoto_ceu_aberto">Esgoto / Vazamento a Céu Aberto</option>
+              <option value="animal_ferido_silvestre">Animal Silvestre / Marinho Ferido</option>
+              <option value="risco_zoonose">Risco de Zoonose / Saúde Animal</option>
+            </select>
+          </div>
+
+          <div class="cb-field">
             <label for="cb-post-details" class="cb-label">Detalhes e descrição do evento</label>
             <textarea
               id="cb-post-details"
@@ -799,8 +856,13 @@
             </div>
           </div>
 
+          <label class="flex items-center gap-2 text-xs font-semibold text-gray-700 cursor-pointer">
+            <input type="checkbox" id="cb-include-coords" checked class="rounded border-gray-300 text-emerald-600">
+            <span>Vincular minha posição atual ao mapa do Guarujá em tempo real</span>
+          </label>
+
           <fieldset class="cb-field cb-fieldset">
-            <legend class="cb-label" id="cb-rating-label">Avaliação do evento</legend>
+            <legend class="cb-label" id="cb-rating-label">Urgência / Relevância (1 a 5)</legend>
             <div class="cb-rating-row">
               <div id="cb-post-rating" class="cb-rating" role="radiogroup" aria-labelledby="cb-rating-label"></div>
               <span id="cb-rating-caption" class="cb-rating-caption" aria-hidden="true">Selecione de 1 a 5</span>
@@ -899,11 +961,11 @@
   <!-- ==================================================================== -->
   <!-- MODAL: CALIBRAR / DEFINIR LOCALIZAÇÃO 100% EXATA (PEREQUÊ & GUARUJÁ INTEIRO) -->
   <!-- ==================================================================== -->
-  <div id="modal-location" class="hidden fixed inset-0 z-[2000] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+  <div id="modal-location" role="dialog" aria-modal="true" aria-labelledby="modal-location-title" class="hidden fixed inset-0 z-[2000] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
     <div class="bg-white rounded-3xl p-6 w-full max-w-lg shadow-2xl border border-gray-100 max-h-[90vh] overflow-y-auto">
       <div class="flex justify-between items-start">
         <div>
-          <h3 class="text-base font-black text-gray-900 flex items-center gap-1.5">
+          <h3 id="modal-location-title" class="text-base font-black text-gray-900 flex items-center gap-1.5">
             📍 Localização Exata no Guarujá (Bairro do Perequê & Todos os Bairros)
           </h3>
           <p class="text-xs text-gray-500 mt-0.5 leading-relaxed">
@@ -1008,7 +1070,7 @@
   <!-- ==================================================================== -->
   <!-- MODAL: LOGIN / CADASTRO (ACIONADO PELA TELA INICIAL OU PELO MAPA) -->
   <!-- ==================================================================== -->
-  <div id="modal-login" class="hidden fixed inset-0 z-[3500] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+  <div id="modal-login" role="dialog" aria-modal="true" aria-labelledby="tab-login" class="hidden fixed inset-0 z-[3500] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
     <div class="bg-white rounded-3xl p-6 w-full max-w-sm shadow-2xl border border-gray-100">
       
       <div class="flex border-b border-gray-200 mb-4 text-xs font-bold">
@@ -1040,21 +1102,22 @@
       <form id="auth-form" onsubmit="handleAuthSubmit(event)" class="mt-2 space-y-3">
         <div id="field-name" class="hidden">
           <label class="text-[11px] font-bold text-gray-600">Seu Nome Completo</label>
-          <input type="text" id="auth-name" placeholder="Ex: Maria Silva" class="w-full mt-1 p-2.5 text-xs border rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+          <input type="text" id="auth-name" minlength="2" maxlength="80" placeholder="Ex: Maria Silva" class="w-full mt-1 p-2.5 text-xs border rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none">
         </div>
         <div>
           <label class="text-[11px] font-bold text-gray-600">E-mail</label>
-          <input type="email" id="auth-email" placeholder="seu@email.com" class="w-full mt-1 p-2.5 text-xs border rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none" required>
+          <input type="email" id="auth-email" maxlength="255" placeholder="seu@email.com" class="w-full mt-1 p-2.5 text-xs border rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none" required>
         </div>
         <div>
           <label class="text-[11px] font-bold text-gray-600">Senha</label>
-          <input type="password" id="auth-pass" placeholder="••••••" class="w-full mt-1 p-2.5 text-xs border rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none" required>
+          <input type="password" id="auth-pass" maxlength="128" placeholder="Mínimo de 8 caracteres" class="w-full mt-1 p-2.5 text-xs border rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-none" required>
         </div>
 
-        <!-- Botão Discreto para Preencher Acesso de Demonstração (Banca) -->
-        <div>
+        <!-- Botão Discreto para Preencher Acesso de Demonstração (Banca) — oculto quando demoLoginEnabled=false -->
+        <div id="demo-credentials-box" class="hidden">
           <button
             type="button"
+            id="btn-demo-credentials"
             onclick="fillDemoCredentials('modal')"
             class="w-full py-1.5 px-2.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-[11px] font-semibold transition flex items-center justify-center gap-1.5"
           >
@@ -1073,9 +1136,9 @@
   <!-- ==================================================================== -->
   <!-- MODAL: AVALIAÇÃO DE ATENDIMENTO -->
   <!-- ==================================================================== -->
-  <div id="modal-review" class="hidden fixed inset-0 z-[2000] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+  <div id="modal-review" role="dialog" aria-modal="true" aria-labelledby="modal-review-title" class="hidden fixed inset-0 z-[2000] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
     <div class="bg-white rounded-3xl p-6 w-full max-w-md shadow-2xl">
-      <h3 class="text-base font-bold text-gray-900">Avaliar Serviço no CuidAção</h3>
+      <h3 id="modal-review-title" class="text-base font-bold text-gray-900">Avaliar Serviço no CuidAção</h3>
       <p class="text-xs text-gray-500 mt-1">Sua avaliação orienta melhorias públicas e informa a comunidade sobre acessibilidade e espera.</p>
 
       <form onsubmit="handleReviewSubmit(event)" class="mt-4 space-y-3.5 text-xs">
@@ -1119,12 +1182,12 @@
   <!-- ==================================================================== -->
   <!-- MODAL: REPORTAR ALERTA AMBIENTAL (COM SELEÇÃO DE PONTO NO MAPA) -->
   <!-- ==================================================================== -->
-  <div id="modal-report" class="hidden fixed inset-0 z-[2000] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+  <div id="modal-report" role="dialog" aria-modal="true" aria-labelledby="modal-report-title" class="hidden fixed inset-0 z-[2000] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
     <div class="bg-white rounded-3xl p-6 w-full max-w-md shadow-2xl">
       <div class="flex items-center justify-between">
         <div class="flex items-center gap-2">
           <span class="text-2xl">⚠️</span>
-          <h3 class="text-base font-bold text-gray-900">Reportar Foco de Dengue ou Resíduo</h3>
+          <h3 id="modal-report-title" class="text-base font-bold text-gray-900">Reportar Foco de Dengue ou Resíduo</h3>
         </div>
         <button type="button" onclick="closeReportModal()" class="text-gray-400 hover:text-gray-700 font-bold text-sm p-1">✕</button>
       </div>
@@ -1138,6 +1201,8 @@
             <option value="descarte_irregular">Descarte Irregular de Resíduos e Entulho</option>
             <option value="terreno_baldio">Terreno Baldio com Vegetação Densa / Lixo</option>
             <option value="esgoto_ceu_aberto">Esgoto ou Vazamento a Céu Aberto</option>
+            <option value="animal_ferido_silvestre">Animal Silvestre ou Marinho Ferido (Mata Atlântica / Orla)</option>
+            <option value="risco_zoonose">Risco de Zoonose (Raiva / Esporotricose / Vetores)</option>
           </select>
         </div>
 
@@ -1193,10 +1258,11 @@
 
   <!-- Script Principal da Aplicação (Pasta JS) -->
   <script src="js/config.js"></script>
-  <script src="js/map/live-gps.js?v=6"></script>
-  <script src="js/map/pharmacies-data.js?v=6"></script>
-  <script src="js/map/pharmacy-layer.js?v=6"></script>
-  <script src="js/app.js?v=6"></script>
+  <script src="js/community/feed.js?v=7"></script>
+  <script src="js/map/live-gps.js?v=7"></script>
+  <script src="js/map/pharmacies-data.js?v=7"></script>
+  <script src="js/map/pharmacy-layer.js?v=7"></script>
+  <script src="js/app.js?v=7"></script>
 </body>
 </html>
 

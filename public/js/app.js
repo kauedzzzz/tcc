@@ -16,6 +16,7 @@ let demoLoginEnabled = false;
 let deferredInstallPrompt = null;
 const PEREQUE_COORDS = { lat: -23.93680, lng: -46.18250 };
 const DEFAULT_GUARUJA_COORDS = { lat: PEREQUE_COORDS.lat, lng: PEREQUE_COORDS.lng };
+const GUARUJA_COVERAGE = Object.freeze({ minLat: -24.12, maxLat: -23.82, minLng: -46.40, maxLng: -46.05 });
 const STORAGE_COORDS_KEY = 'cuidacao_precise_coords_v2_pereque';
 const STORAGE_MAP_STYLE_KEY = 'cuidacao_map_style';
 const STORAGE_GOOGLE_ACCOUNTS_KEY = 'cuidacao_google_accounts_v1';
@@ -28,9 +29,26 @@ let baseLayers = {
   hybridTransportation: null
 };
 let currentMapStyle = localStorage.getItem(STORAGE_MAP_STYLE_KEY) === 'satellite' ? 'satellite' : 'streets';
-let locationsGroup = L.layerGroup();
+let locationsGroup = (typeof L !== 'undefined' && typeof L.markerClusterGroup === 'function')
+  ? L.markerClusterGroup({
+      showCoverageOnHover: false,
+      maxClusterRadius: 42,
+      spiderfyOnMaxZoom: true,
+      disableClusteringAtZoom: 17,
+      iconCreateFunction: function (cluster) {
+        return L.divIcon({
+          html: '<div class="cuidacao-cluster-badge">' + cluster.getChildCount() + '</div>',
+          className: 'cuidacao-cluster-icon',
+          iconSize: L.point(40, 40)
+        });
+      }
+    })
+  : L.layerGroup();
 let reportsGroup = L.layerGroup();
 let neighborhoodsGroup = L.layerGroup();
+let heatmapLayer = null;
+let heatmapVisible = false;
+let cachedReports = [];
 let userMarker = null;
 let cepHighlightMarker = null;
 let cepFeedbackTimer = null;
@@ -51,12 +69,20 @@ let liveGpsLastContext = null;       // { lat, lng, at } da última recarga de e
 const liveGpsNoticeAt = {};          // controle anti-spam dos avisos
 let locationContextSeq = 0;
 
-// Camada de farmácias (módulos js/map/pharmacies-data.js e js/map/pharmacy-layer.js)
+// Camada unificada de farmácias (cat-3)
 const STORAGE_PHARMACY_LAYER_KEY = 'cuidacao_show_pharmacies';
-let pharmacyLayer = null;
 let pharmaciesVisible = localStorage.getItem(STORAGE_PHARMACY_LAYER_KEY) !== '0';
 
+let locationsAbortController = null;
+let locationsReqSeq = 0;
+let reportsAbortController = null;
+let reportsReqSeq = 0;
+let modalsInitialized = false;
+
 let currentFilter = 'all';
+let currentCategory = 'all';
+let onlyPopularPharmacy = false;
+let onlyOpenNow = false;
 let currentSearch = '';
 let currentRadius = 25000; // 25 km por padrão para abranger 100% do Guarujá e todos os bairros
 let selectedLocation = null;
@@ -77,6 +103,7 @@ const SVG_ICONS = {
   pill: '<svg class="w-5 h-5 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.5 20.5l10-10a4.95 4.95 0 10-7-7l-10 10a4.95 4.95 0 107 7z"/><path d="M8.5 8.5l7 7"/></svg>',
   recycle: '<svg class="w-5 h-5 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M7 19H4.8a1.8 1.8 0 0 1-1.56-.88 1.8 1.8 0 0 1 0-1.78L7.2 9.5"/><path d="M11 19h8.2a1.8 1.8 0 0 0 1.58-.91 1.8 1.8 0 0 0 0-1.8L17 10"/><path d="m14 12 3-3 3 3"/><path d="M14.5 4.5 12 2 9.5 4.5"/><path d="M12 2v6.5a1.5 1.5 0 0 0 1.5 1.5H17"/><path d="m6 16 2 3-2 3"/></svg>',
   tree: '<svg class="w-5 h-5 text-white" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L4 14h3v6h10v-6h3L12 2zm0 3.8L15.5 9h-7L12 5.8z"/></svg>',
+  paw: '<svg class="w-5 h-5 text-white" viewBox="0 0 24 24" fill="currentColor"><circle cx="6.5" cy="9.5" r="2"/><circle cx="10" cy="6.5" r="2"/><circle cx="14.5" cy="6.5" r="2"/><circle cx="17.8" cy="9.5" r="2"/><path d="M12 11.5c-3.1 0-5.8 2.4-5.8 5.2 0 1.6 1.2 2.8 2.8 2.8 1.1 0 2-.5 3-.5s1.9.5 3 .5c1.6 0 2.8-1.2 2.8-2.8 0-2.8-2.7-5.2-5.8-5.2z"/></svg>',
   alert: '<svg class="w-5 h-5 text-white" viewBox="0 0 24 24" fill="currentColor"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>'
 };
 
@@ -172,6 +199,7 @@ const GUARUJA_BUILTIN_LOCATIONS = [
     domain: 'health',
     color: '#8B5CF6',
     iconType: 'pill',
+    has_popular_pharmacy: true,
     name: 'Farmácia Popular & Drogaria do Perequê',
     address: 'Estrada Guarujá-Bertioga, 410 - Centro do Perequê, Guarujá - SP',
     city: 'Guarujá',
@@ -288,6 +316,7 @@ const GUARUJA_BUILTIN_LOCATIONS = [
     domain: 'health',
     color: '#8B5CF6',
     iconType: 'pill',
+    has_popular_pharmacy: true,
     name: 'Drogaria & Farmácia Popular Praia de Pernambuco',
     address: 'Av. Marjory da Silva Prado, 1100 - Praia de Pernambuco, Guarujá - SP',
     city: 'Guarujá',
@@ -632,8 +661,78 @@ const GUARUJA_BUILTIN_LOCATIONS = [
     overall_score: 4.7,
     total_reviews: 21,
     reviews: []
+  },
+  {
+    id: 'loc-zoonoses-1',
+    categoryId: 'cat-6',
+    categoryName: 'Saúde Animal & Controle de Zoonoses',
+    domain: 'animal',
+    color: '#0D9488',
+    iconType: 'paw',
+    name: 'Centro de Controle de Zoonoses (CCZ) & Bem-Estar Animal do Guarujá',
+    address: 'Av. Adriano Dias dos Santos, 600 - Jardim Boa Esperança / Vicente de Carvalho, Guarujá - SP',
+    city: 'Guarujá',
+    state: 'SP',
+    lat: -23.95710,
+    lng: -46.28420,
+    services: ['Vacinação Antirrábica Gratuita (Cães e Gatos)', 'Vigilância e Controle de Zoonoses', 'Castração Pública e Microchipagem'],
+    opening_hours: { '1': { open: '08:00', close: '17:00' }, '2': { open: '08:00', close: '17:00' }, '3': { open: '08:00', close: '17:00' }, '4': { open: '08:00', close: '17:00' }, '5': { open: '08:00', close: '17:00' } },
+    avg_wait_time: 4.5,
+    avg_accessibility: 4.7,
+    avg_humanized_care: 4.9,
+    overall_score: 4.7,
+    total_reviews: 1,
+    reviews: []
+  },
+  {
+    id: 'loc-zoonoses-2',
+    categoryId: 'cat-6',
+    categoryName: 'Saúde Animal & Controle de Zoonoses',
+    domain: 'animal',
+    color: '#0D9488',
+    iconType: 'paw',
+    name: 'Posto Avançado de Saúde Animal & Zoonoses Perequê / Serra do Guararu',
+    address: 'Estrada Guarujá-Bertioga, km 7,5 - Perequê, Guarujá - SP',
+    city: 'Guarujá',
+    state: 'SP',
+    lat: -23.93510,
+    lng: -46.18560,
+    services: ['Campanha Permanente de Vacinação Antirrábica', 'Monitoramento de Fauna Silvestre da Mata Atlântica', 'Prevenção de Zoonoses Costeiras'],
+    opening_hours: { '1': { open: '08:00', close: '16:30' }, '2': { open: '08:00', close: '16:30' }, '3': { open: '08:00', close: '16:30' }, '4': { open: '08:00', close: '16:30' }, '5': { open: '08:00', close: '16:30' } },
+    avg_wait_time: 4.7,
+    avg_accessibility: 4.6,
+    avg_humanized_care: 4.9,
+    overall_score: 4.7,
+    total_reviews: 1,
+    reviews: []
   }
-];
+].concat(
+  (Array.isArray(window.CUIDACAO_FARMACIAS_MOCK) ? window.CUIDACAO_FARMACIAS_MOCK : []).map(p => ({
+    id: p.id,
+    categoryId: 'cat-3',
+    categoryName: p.temFarmaciaPopular ? 'Farmácia Popular' : 'Farmácia & Drogaria',
+    domain: 'health',
+    color: '#8B5CF6',
+    iconType: 'pill',
+    has_popular_pharmacy: !!p.temFarmaciaPopular,
+    name: p.nome,
+    address: p.endereco,
+    city: 'Guarujá',
+    state: 'SP',
+    lat: p.latitude,
+    lng: p.longitude,
+    services: p.temFarmaciaPopular
+      ? ['Programa Farmácia Popular', 'Medicamentos e Atendimento Farmacêutico', 'Descarte Consciente']
+      : ['Medicamentos e Perfumaria', 'Primeiros Socorros', 'Atendimento Farmacêutico'],
+    opening_hours: { '0': { open: '08:00', close: '22:00' }, '1': { open: '07:00', close: '23:00' }, '2': { open: '07:00', close: '23:00' }, '3': { open: '07:00', close: '23:00' }, '4': { open: '07:00', close: '23:00' }, '5': { open: '07:00', close: '23:00' }, '6': { open: '07:00', close: '23:00' } },
+    avg_wait_time: 0,
+    avg_accessibility: 0,
+    avg_humanized_care: 0,
+    overall_score: 0,
+    total_reviews: 0,
+    reviews: []
+  }))
+);
 
 // ============================================================================
 // SISTEMA DE NOTIFICAÇÕES FLUTUANTES (TOASTS MODERNOS - SUBSTITUI ALERT NATIVO)
@@ -715,6 +814,134 @@ function decodeJwtPayload(token) {
   return JSON.parse(jsonPayload);
 }
 
+function isInGuarujaCoverage(lat, lng) {
+  return Number.isFinite(lat) && Number.isFinite(lng) &&
+    lat >= GUARUJA_COVERAGE.minLat && lat <= GUARUJA_COVERAGE.maxLat &&
+    lng >= GUARUJA_COVERAGE.minLng && lng <= GUARUJA_COVERAGE.maxLng;
+}
+
+function isTokenValid(token) {
+  if (!token || typeof token !== 'string') return false;
+  try {
+    const payload = decodeJwtPayload(token);
+    if (!payload || typeof payload.exp !== 'number') return false;
+    return Date.now() <= payload.exp;
+  } catch {
+    return false;
+  }
+}
+
+function clearExpiredOrInvalidSession(promptLogin = true, message = 'Sua sessão expirou. Faça login novamente.') {
+  authToken = null;
+  currentUser = null;
+  try {
+    localStorage.removeItem('cuidacao_token');
+    localStorage.removeItem('onehealth_token');
+  } catch {
+    // Ignora erro de localStorage
+  }
+  renderAuthBox();
+  if (selectedLocation) openSidebar(selectedLocation);
+  if (message) showToast(message, 'info');
+  if (promptLogin) openLoginModal();
+}
+
+async function apiFetch(pathOrUrl, options = {}) {
+  const url = pathOrUrl.startsWith('http') ? pathOrUrl : (API_BASE + pathOrUrl);
+  const opts = Object.assign({}, options);
+  const headers = Object.assign({}, opts.headers || {});
+  const isAuthRequest = !!(opts.auth || headers['Authorization'] || headers['authorization']);
+  delete opts.auth;
+
+  if (isAuthRequest && authToken && !headers['Authorization'] && !headers['authorization']) {
+    headers['Authorization'] = 'Bearer ' + authToken;
+  }
+  opts.headers = headers;
+
+  const res = await fetch(url, opts);
+  if (res.status === 401 && isAuthRequest) {
+    clearExpiredOrInvalidSession(true, 'Sessão expirada ou inválida. Faça login novamente para continuar.');
+  }
+  return res;
+}
+
+function setupAccessibleModals() {
+  if (modalsInitialized) return;
+  modalsInitialized = true;
+
+  const modalCloseMap = {
+    'modal-about': closeAboutModal,
+    'modal-google-account': closeGoogleAccountModal,
+    'modal-location': closeLocationModal,
+    'modal-login': closeLoginModal,
+    'modal-review': closeReviewModal,
+    'modal-report': closeReportModal
+  };
+
+  Object.keys(modalCloseMap).forEach(id => {
+    const modalEl = document.getElementById(id);
+    if (!modalEl) return;
+    modalEl.addEventListener('click', (e) => {
+      if (e.target === modalEl) {
+        modalCloseMap[id]();
+      }
+    });
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    const priorityIds = ['modal-review', 'modal-report', 'modal-login', 'modal-google-account', 'modal-location', 'modal-about'];
+    for (const id of priorityIds) {
+      const el = document.getElementById(id);
+      if (el && !el.classList.contains('hidden')) {
+        e.preventDefault();
+        modalCloseMap[id]();
+        return;
+      }
+    }
+    const gpsAlertEl = document.getElementById('gps-alert');
+    if (gpsAlertEl && !gpsAlertEl.classList.contains('hidden')) {
+      e.preventDefault();
+      hideGpsAlert();
+      return;
+    }
+    if (pickLocationMode) {
+      e.preventDefault();
+      cancelPickLocationMode();
+      return;
+    }
+    const communityEl = document.getElementById('community-bar');
+    if (communityEl && !communityEl.classList.contains('hidden')) {
+      e.preventDefault();
+      closeCommunityBar();
+      return;
+    }
+    const sidebarEl = document.getElementById('sidebar');
+    if (sidebarEl && !sidebarEl.classList.contains('hidden')) {
+      e.preventDefault();
+      closeSidebar();
+    }
+  });
+}
+
+function updateDemoLoginVisibility() {
+  const demoBox = document.getElementById('demo-credentials-box');
+  if (demoBox) {
+    demoBox.classList.toggle('hidden', !demoLoginEnabled);
+  }
+}
+
+function updateHomeScreenCta() {
+  const labelEl = document.getElementById('btn-home-explore-label');
+  if (!labelEl) return;
+  if (currentUser && currentUser.name && authToken && isTokenValid(authToken)) {
+    const firstName = currentUser.name.trim().split(/\s+/)[0];
+    labelEl.textContent = 'Continuar como ' + firstName;
+  } else {
+    labelEl.textContent = 'Começar a Explorar o Mapa';
+  }
+}
+
 function haversineMeters(lat1, lon1, lat2, lon2) {
   const R = 6371e3;
   const p1 = lat1 * Math.PI / 180;
@@ -758,9 +985,10 @@ function registerServiceWorkerPwa() {
 // ============================================================================
 async function initMap() {
   registerServiceWorkerPwa();
+  setupAccessibleModals();
 
   try {
-    const cfgRes = await fetch(API_BASE + '/api/v1/auth/google/config');
+    const cfgRes = await apiFetch('/api/v1/auth/google/config');
     if (cfgRes.ok) {
       const cfg = await cfgRes.json();
       if (cfg.clientId) {
@@ -771,6 +999,7 @@ async function initMap() {
   } catch {
     // Segue com configuração local
   }
+  updateDemoLoginVisibility();
 
   let hasManualSaved = false;
   try {
@@ -835,7 +1064,7 @@ async function initMap() {
   neighborhoodsGroup.addTo(map);
   locationsGroup.addTo(map);
   reportsGroup.addTo(map);
-  initPharmacyLayer();
+  updatePharmacyToggleButton();
 
   renderNeighborhoodLabelsOnMap();
 
@@ -863,9 +1092,9 @@ async function initMap() {
   });
 
   if (authToken) {
-    try {
+    if (isTokenValid(authToken)) {
       currentUser = decodeJwtPayload(authToken);
-    } catch {
+    } else {
       localStorage.removeItem('cuidacao_token');
       localStorage.removeItem('onehealth_token');
       authToken = null;
@@ -874,14 +1103,21 @@ async function initMap() {
   }
   renderAuthBox();
 
-  // Renderiza pino do usuário no Bairro do Perequê e carrega todos os pontos do Guarujá imediatamente
+  // Renderiza pino inicial e dispara o bootstrap único de localização + locais + alertas (sem duplicidade)
   ensureUserMarker(userCoords.lat, userCoords.lng, currentAccuracyMeters || 12, currentLocationSource);
-  loadLocations();
-  loadReports();
   initCommunityBar();
 
-  // Inicia detecção inteligente de localização com ancoragem segura no Bairro do Perequê
-  detectAndApplyUserLocation(true);
+  // Suporte a link direto vindo de comunidade.html (?focusLat=...&focusLng=...)
+  const params = new URLSearchParams(window.location.search);
+  const focusLat = parseFloat(params.get('focusLat'));
+  const focusLng = parseFloat(params.get('focusLng'));
+  if (Number.isFinite(focusLat) && Number.isFinite(focusLng) && isInGuarujaCoverage(focusLat, focusLng)) {
+    hideHomeScreen();
+    await selectPreciseLocation(focusLat, focusLng, 'Alerta da Comunidade, Guarujá - SP');
+    return;
+  }
+
+  await detectAndApplyUserLocation(false);
 }
 
 // ============================================================================
@@ -966,31 +1202,17 @@ function applyMapStyle(style, notifyUser = true) {
 }
 
 function updateMapStyleButtons() {
-  const headerBtn = document.getElementById('btn-map-style-toggle');
   const floatingBtn = document.getElementById('btn-map-style-floating');
+  if (!floatingBtn) return;
 
   if (currentMapStyle === 'satellite') {
-    if (headerBtn) {
-      headerBtn.className =
-        'bg-emerald-600 hover:bg-emerald-700 text-white border border-emerald-400 ring-2 ring-emerald-300/60 shadow-lg px-3.5 py-2 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition active:scale-95';
-      headerBtn.innerHTML = '🗺️ <span>Mapa de Ruas</span>';
-    }
-    if (floatingBtn) {
-      floatingBtn.className =
-        'px-3.5 h-11 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white rounded-2xl font-extrabold text-xs border border-emerald-400 ring-2 ring-emerald-300/60 shadow-2xl flex items-center justify-center gap-1.5 transition';
-      floatingBtn.innerHTML = '🗺️ <span>Mapa de Ruas</span>';
-    }
+    floatingBtn.className =
+      'px-3.5 h-11 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white rounded-2xl font-extrabold text-xs border border-emerald-400 ring-2 ring-emerald-300/60 shadow-2xl flex items-center justify-center gap-1.5 transition';
+    floatingBtn.innerHTML = '🗺️ <span>Mapa de Ruas</span>';
   } else {
-    if (headerBtn) {
-      headerBtn.className =
-        'bg-white/95 backdrop-blur-md text-slate-800 hover:bg-gray-50 border border-gray-300 shadow-md px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition active:scale-95';
-      headerBtn.innerHTML = '🛰️ <span>Satélite</span>';
-    }
-    if (floatingBtn) {
-      floatingBtn.className =
-        'px-3.5 h-11 bg-white/95 backdrop-blur-md hover:bg-gray-50 active:scale-95 text-slate-800 rounded-2xl font-extrabold text-xs border border-gray-200 shadow-xl flex items-center justify-center gap-1.5 transition';
-      floatingBtn.innerHTML = '🛰️ <span>Satélite</span>';
-    }
+    floatingBtn.className =
+      'px-3.5 h-11 bg-white/95 backdrop-blur-md hover:bg-gray-50 active:scale-95 text-slate-800 rounded-2xl font-extrabold text-xs border border-gray-200 shadow-xl flex items-center justify-center gap-1.5 transition';
+    floatingBtn.innerHTML = '🛰️ <span>Satélite</span>';
   }
 }
 
@@ -1522,40 +1744,17 @@ function openLocationSearchFromGpsAlert() {
 }
 
 // ============================================================================
-// CAMADA DE FARMÁCIAS (MOCK DO TCC) — js/map/pharmacies-data.js + js/map/pharmacy-layer.js
+// CAMADA UNIFICADA DE FARMÁCIAS E FARMÁCIA POPULAR (cat-3 em locations)
 // ============================================================================
-function initPharmacyLayer() {
-  if (!map || !window.CuidacaoPharmacyLayer || !Array.isArray(window.CUIDACAO_FARMACIAS_MOCK)) {
-    console.warn('[CuidAção] Camada de farmácias indisponível (módulos não carregados).');
-    updatePharmacyToggleButton();
-    return;
-  }
-  try {
-    pharmacyLayer = window.CuidacaoPharmacyLayer.create(window.CUIDACAO_FARMACIAS_MOCK, {
-      isMockData: false,
-      getUserPosition: () => userCoords
-    });
-    if (pharmaciesVisible) pharmacyLayer.addTo(map);
-  } catch (err) {
-    console.warn('[CuidAção] Erro ao criar a camada de farmácias:', err);
-    pharmacyLayer = null;
-  }
-  updatePharmacyToggleButton();
-}
-
 function togglePharmacyLayer() {
-  if (!pharmacyLayer || !map) {
-    showToast('A camada de farmácias não está disponível.', 'error');
-    return;
-  }
+  if (!map) return;
   pharmaciesVisible = !pharmaciesVisible;
-  if (pharmaciesVisible) pharmacyLayer.addTo(map);
-  else map.removeLayer(pharmacyLayer);
   try { localStorage.setItem(STORAGE_PHARMACY_LAYER_KEY, pharmaciesVisible ? '1' : '0'); } catch { /* ignora */ }
   updatePharmacyToggleButton();
+  loadLocations();
   showToast(
     pharmaciesVisible
-      ? 'Farmácias exibidas no mapa (pino com cruz verde; selo FP = Farmácia Popular).'
+      ? 'Farmácias exibidas no mapa (selo FP = Farmácia Popular).'
       : 'Farmácias ocultadas do mapa.',
     'info'
   );
@@ -1564,10 +1763,59 @@ function togglePharmacyLayer() {
 function updatePharmacyToggleButton() {
   const btn = document.getElementById('btn-toggle-pharmacies');
   if (!btn) return;
-  const active = pharmaciesVisible && !!pharmacyLayer;
+  const active = pharmaciesVisible && currentFilter !== 'environment' && currentFilter !== 'animal';
   btn.setAttribute('aria-pressed', String(active));
   btn.classList.toggle('is-active', active);
   btn.title = active ? 'Ocultar farmácias do mapa' : 'Mostrar farmácias no mapa';
+}
+
+function updateHeatmapLayerFromReports() {
+  if (!map || typeof L === 'undefined' || typeof L.heatLayer !== 'function') return;
+  if (heatmapLayer && map.hasLayer(heatmapLayer)) {
+    map.removeLayer(heatmapLayer);
+  }
+  if (!heatmapVisible) return;
+
+  const heatPoints = cachedReports
+    .filter(r =>
+      r.status !== 'resolved' &&
+      r.status !== 'rejected' &&
+      r.lat !== null &&
+      r.lng !== null &&
+      Number.isFinite(Number(r.lat)) &&
+      Number.isFinite(Number(r.lng))
+    )
+    .map(r => {
+      const intensity = Math.min(1, 0.45 + (Number(r.urgency || 3) * 0.08) + (Math.min(5, Number(r.confirmations || 0)) * 0.05));
+      return [Number(r.lat), Number(r.lng), intensity];
+    });
+
+  heatmapLayer = L.heatLayer(heatPoints, {
+    radius: 32,
+    blur: 22,
+    maxZoom: 17,
+    gradient: { 0.3: '#fde047', 0.65: '#f97316', 1.0: '#dc2626' }
+  }).addTo(map);
+}
+
+function toggleHeatmapLayer() {
+  if (!map || typeof L.heatLayer !== 'function') {
+    showToast('Camada de Mapa de Calor indisponível.', 'error');
+    return;
+  }
+  heatmapVisible = !heatmapVisible;
+  const btn = document.getElementById('btn-toggle-heatmap');
+  if (btn) {
+    btn.setAttribute('aria-pressed', String(heatmapVisible));
+    btn.classList.toggle('is-active', heatmapVisible);
+  }
+  updateHeatmapLayerFromReports();
+  showToast(
+    heatmapVisible
+      ? 'Mapa de Calor de focos de dengue/resíduos ativado!'
+      : 'Mapa de Calor desativado.',
+    'info'
+  );
 }
 
 // ============================================================================
@@ -1724,16 +1972,20 @@ async function selectPreciseLocation(lat, lng, label) {
 // ============================================================================
 // 3. CRIAR MARCADORES VETORIAIS COM ANCORAGEM EXATA NO PIXEL DA COORDENADA
 // ============================================================================
-function createInteractiveMarker(color, iconType, labelText) {
+function createInteractiveMarker(color, iconType, labelText, badgeText = '') {
   const svgIcon = SVG_ICONS[iconType] || SVG_ICONS.clinic;
+  const badgeHtml = badgeText
+    ? '<span class="pin-fp-badge" title="Participante do Programa Farmácia Popular">' + escapeHtml(badgeText) + '</span>'
+    : '';
   
   const html = 
     '<div class="pin-badge-wrapper">' +
       '<div class="pin-tag px-2.5 py-0.5 rounded-full text-[10px] font-black whitespace-nowrap max-w-[155px] truncate text-center">' +
         escapeHtml(labelText) +
       '</div>' +
-      '<div class="w-10 h-10 rounded-2xl flex items-center justify-center shadow-lg border-2 border-white ring-2 ring-black/20 shrink-0" style="background-color: ' + color + ';">' +
+      '<div class="relative w-10 h-10 rounded-2xl flex items-center justify-center shadow-lg border-2 border-white ring-2 ring-black/20 shrink-0" style="background-color: ' + color + ';">' +
         svgIcon +
+        badgeHtml +
       '</div>' +
       '<div class="w-3 h-3 rotate-45 -mt-1.5 border-r-2 border-b-2 border-white shadow-sm shrink-0" style="background-color: ' + color + ';"></div>' +
     '</div>';
@@ -1771,31 +2023,48 @@ function evaluateBusinessHours(hoursMap) {
 // 5. CARREGAR LOCAIS E ALERTAS DE TODO O GUARUJÁ (INCLUINDO PEREQUÊ E ENTORNO)
 // ============================================================================
 async function loadLocations() {
+  if (locationsAbortController) {
+    locationsAbortController.abort();
+  }
+  const controller = new AbortController();
+  locationsAbortController = controller;
+  const reqSeq = ++locationsReqSeq;
+
   let apiLocations = [];
+  let apiSucceeded = false;
   try {
-    const url = API_BASE + '/api/v1/locations?lat=' + userCoords.lat + 
+    const url = '/api/v1/locations?lat=' + userCoords.lat + 
                 '&lng=' + userCoords.lng + 
                 '&radius=' + currentRadius + 
                 '&domain=' + currentFilter + 
+                '&category=' + currentCategory +
+                (onlyPopularPharmacy ? '&popular_only=1' : '') +
+                (onlyOpenNow ? '&open_now=1' : '') +
                 '&search=' + encodeURIComponent(currentSearch);
                 
-    const res = await fetch(url);
+    const res = await apiFetch(url, { signal: controller.signal });
+    if (reqSeq !== locationsReqSeq) return;
     if (res.ok) {
       const json = await res.json();
       apiLocations = json.data || [];
+      apiSucceeded = true;
     }
   } catch (err) {
-    console.warn('Usando base integrada do Guarujá/Perequê:', err);
+    if (err && err.name === 'AbortError') return;
+    console.warn('Usando base integrada offline do Guarujá/Perequê:', err);
   }
 
-  // Mescla as unidades da API com a base completa integrada do Guarujá (garante 100% do Perequê e todos os bairros)
+  if (reqSeq !== locationsReqSeq) return;
+
+  // Se a API respondeu com sucesso, usa os dados oficiais do servidor; fallback local apenas offline
   const mergedMap = new Map();
-  apiLocations.forEach(loc => mergedMap.set(loc.id, loc));
-  GUARUJA_BUILTIN_LOCATIONS.forEach(loc => {
-    if (!mergedMap.has(loc.id)) {
+  if (apiSucceeded) {
+    apiLocations.forEach(loc => mergedMap.set(loc.id, loc));
+  } else {
+    GUARUJA_BUILTIN_LOCATIONS.forEach(loc => {
       mergedMap.set(loc.id, normalizeLocationRatings(loc));
-    }
-  });
+    });
+  }
 
   const searchLower = (currentSearch || '').toLowerCase().trim();
   let allList = Array.from(mergedMap.values()).map(loc => {
@@ -1805,6 +2074,22 @@ async function loadLocations() {
 
   if (currentFilter && currentFilter !== 'all') {
     allList = allList.filter(l => l.domain === currentFilter);
+  }
+
+  if (currentCategory && currentCategory !== 'all') {
+    allList = allList.filter(l => l.categoryId === currentCategory);
+  }
+
+  if (onlyPopularPharmacy) {
+    allList = allList.filter(l => l.categoryId === 'cat-3' && l.has_popular_pharmacy !== false);
+  }
+
+  if (onlyOpenNow) {
+    allList = allList.filter(l => evaluateBusinessHours(l.opening_hours).open);
+  }
+
+  if (!pharmaciesVisible && currentCategory !== 'cat-3') {
+    allList = allList.filter(l => l.categoryId !== 'cat-3' && l.categoryId !== 'farmacia');
   }
 
   if (searchLower) {
@@ -1819,6 +2104,7 @@ async function loadLocations() {
   allList.sort((a, b) => a.distance_meters - b.distance_meters);
 
   cachedLocations = allList;
+  updatePharmacyToggleButton();
   locationsGroup.clearLayers();
 
   cachedLocations.forEach(loc => {
@@ -1828,12 +2114,17 @@ async function loadLocations() {
       else if (loc.categoryId === 'cat-3' || loc.categoryId === 'farmacia') iconType = 'pill';
       else if (loc.categoryId === 'cat-4' || loc.categoryId === 'ecoponto') iconType = 'recycle';
       else if (loc.categoryId === 'cat-5' || loc.categoryId === 'parque') iconType = 'tree';
+      else if (loc.categoryId === 'cat-6' || loc.categoryId === 'zoonoses') iconType = 'paw';
     }
+
+    const isPharmacy = loc.categoryId === 'cat-3' || loc.categoryId === 'farmacia';
+    const isPopularPharmacy = isPharmacy && (loc.has_popular_pharmacy !== false);
+    const badgeText = isPopularPharmacy ? 'FP' : '';
 
     const shortName = loc.name.split('(')[0].replace('Centro Municipal de Saúde', 'CMS').replace('Hospital', 'Hosp.').trim();
 
     const marker = L.marker([loc.lat, loc.lng], {
-      icon: createInteractiveMarker(loc.color, iconType, shortName)
+      icon: createInteractiveMarker(loc.color, iconType, shortName, badgeText)
     });
 
     const status = evaluateBusinessHours(loc.opening_hours);
@@ -1842,6 +2133,11 @@ async function loadLocations() {
     const scoreBadgeHtml = loc.total_reviews > 0
       ? '<span>Nota: <b class="text-yellow-600">⭐ ' + loc.overall_score + '</b> <span class="text-gray-400">(' + loc.total_reviews + ')</span></span>'
       : '<span class="text-gray-400">Sem avaliações ainda</span>';
+    const fpPopupBadge = isPharmacy
+      ? (isPopularPharmacy
+          ? '<p class="text-[11px] font-extrabold text-blue-800 bg-blue-50 border border-blue-200 rounded-lg px-2 py-1 mb-2">✔ selo FP • Participante do Programa Farmácia Popular</p>'
+          : '<p class="text-[11px] font-semibold text-gray-600 bg-gray-100 border border-gray-200 rounded-lg px-2 py-1 mb-2">Farmácia Comunitária / Rede Privada</p>')
+      : '';
 
     const popupContent = 
       '<div class="p-1 min-w-[250px] max-w-[290px]">' +
@@ -1850,6 +2146,7 @@ async function loadLocations() {
           '<span class="text-[11px] font-bold ' + (status.open ? 'text-emerald-600' : 'text-red-600') + '">' + (status.open ? 'Aberto agora' : 'Fechado') + '</span>' +
         '</div>' +
         '<h3 class="font-black text-sm text-gray-900 leading-snug mb-1">' + escapeHtml(loc.name) + '</h3>' +
+        fpPopupBadge +
         '<div class="p-2 bg-gray-50 rounded-xl border border-gray-100 my-2">' +
           '<p class="text-[10px] font-bold uppercase text-gray-400">Localização Exata</p>' +
           '<p class="text-xs text-gray-700 font-medium leading-tight mt-0.5">📍 ' + escapeHtml(loc.address) + '</p>' +
@@ -1862,7 +2159,7 @@ async function loadLocations() {
           '<button onclick="openSidebarById(\'' + safeId + '\')" class="flex-1 bg-gray-900 hover:bg-black text-white text-xs py-2 px-2.5 rounded-xl font-bold transition">' +
             'Ver Detalhes & Notas' +
           '</button>' +
-          '<a href="https://www.google.com/maps/dir/?api=1&origin=' + userCoords.lat + ',' + userCoords.lng + '&destination=' + loc.lat + ',' + loc.lng + '" target="_blank" class="bg-blue-600 hover:bg-blue-700 text-white text-xs py-2 px-3 rounded-xl font-bold transition flex items-center justify-center" title="Traçar rota a partir da sua posição">' +
+          '<a href="https://www.google.com/maps/dir/?api=1&origin=' + userCoords.lat + ',' + userCoords.lng + '&destination=' + loc.lat + ',' + loc.lng + '" target="_blank" rel="noopener noreferrer" class="bg-blue-600 hover:bg-blue-700 text-white text-xs py-2 px-3 rounded-xl font-bold transition flex items-center justify-center" title="Traçar rota a partir da sua posição">' +
             '🗺️ Rota' +
           '</a>' +
         '</div>' +
@@ -1878,46 +2175,164 @@ async function loadLocations() {
   });
 }
 
-async function loadReports() {
-  try {
-    const res = await fetch(API_BASE + '/api/v1/reports');
-    const json = await res.json();
-    reportsGroup.clearLayers();
+const OFFLINE_FALLBACK_REPORTS = [
+  {
+    id: 'rep-pereque-1',
+    title: 'Monitoramento Preventivo de Dengue e Limpeza de Vala',
+    report_type: 'foco_dengue',
+    description: 'Ponto de atenção para escoamento de água de chuva próximo à margem da Estrada Guarujá-Bertioga no Perequê.',
+    address: 'Estrada Guarujá-Bertioga, próx. ao km 7 - Perequê, Guarujá - SP',
+    lat: -23.93710,
+    lng: -46.18360
+  }
+];
 
-    const list = json.data || [];
-    if (!list.some(r => r.id === 'rep-pereque-1')) {
-      list.unshift({
-        id: 'rep-pereque-1',
-        title: 'Monitoramento Preventivo de Dengue e Limpeza de Vala',
-        report_type: 'foco_dengue',
-        description: 'Ponto de atenção para escoamento de água de chuva próximo à margem da Estrada Guarujá-Bertioga no Perequê.',
-        address: 'Estrada Guarujá-Bertioga, próx. ao km 7 - Perequê, Guarujá - SP',
-        lat: -23.93710,
-        lng: -46.18360
-      });
+const REPORT_STATUS_UI = {
+  pending: { pinColor: '#D97706', pinLabel: '⚠️ Alerta', badgeBg: 'bg-amber-100 text-amber-800', text: 'Em aberto' },
+  in_analysis: { pinColor: '#2563EB', pinLabel: '🔎 Em análise', badgeBg: 'bg-blue-100 text-blue-800', text: 'Em análise' },
+  resolved: { pinColor: '#059669', pinLabel: '✅ Resolvido', badgeBg: 'bg-emerald-100 text-emerald-800', text: 'Resolvido' },
+  rejected: { pinColor: '#6B7280', pinLabel: 'Arquivado', badgeBg: 'bg-gray-100 text-gray-600', text: 'Arquivado' }
+};
+
+async function confirmReportFromMap(reportId) {
+  if (!authToken || !currentUser) {
+    showToast('Faça login para confirmar que você também viu este foco.', 'info');
+    openLoginModal();
+    return;
+  }
+  try {
+    const res = await apiFetch('/api/v1/reports/' + encodeURIComponent(reportId) + '/confirm', {
+      method: 'POST',
+      auth: true,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    if (res.status === 401) return;
+    const json = await res.json();
+    if (res.ok) {
+      showToast(json.message || 'Confirmação comunitária registrada!', 'success');
+      loadReports();
+      if (communityFeedController) communityFeedController.reload();
+    } else {
+      showToast(json.error || 'Você já confirmou este alerta.', 'info');
+    }
+  } catch {
+    showToast('Sem conexão para confirmar o alerta agora.', 'error');
+  }
+}
+
+async function changeReportStatusFromMap(reportId, nextStatus) {
+  if (!authToken || !currentUser) return;
+  try {
+    const res = await apiFetch('/api/v1/reports/' + encodeURIComponent(reportId) + '/status', {
+      method: 'PATCH',
+      auth: true,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: nextStatus })
+    });
+    if (res.status === 401) return;
+    const json = await res.json();
+    if (res.ok) {
+      showToast('Status do alerta atualizado!', 'success');
+      loadReports();
+      if (communityFeedController) communityFeedController.reload();
+    } else {
+      showToast(json.error || 'Sem permissão para alterar status.', 'error');
+    }
+  } catch {
+    showToast('Erro de conexão ao atualizar status.', 'error');
+  }
+}
+
+function renderReportsMarkers(list) {
+  cachedReports = Array.isArray(list) ? list : [];
+  reportsGroup.clearLayers();
+
+  const canModerate = !!(currentUser && (currentUser.role === 'agent' || currentUser.role === 'admin'));
+
+  cachedReports.forEach(rep => {
+    if (rep.lat === null || rep.lng === null || !Number.isFinite(Number(rep.lat)) || !Number.isFinite(Number(rep.lng))) return;
+    if (rep.status === 'rejected') return;
+
+    const stMeta = REPORT_STATUS_UI[rep.status] || REPORT_STATUS_UI.pending;
+    const confirmations = Number(rep.confirmations) || 0;
+    const safeRepId = escapeHtml(rep.id);
+
+    const marker = L.marker([Number(rep.lat), Number(rep.lng)], {
+      icon: createInteractiveMarker(stMeta.pinColor, 'alert', stMeta.pinLabel)
+    });
+
+    let nearestHtml = '';
+    if (rep.nearest_ubs || rep.nearest_ecoponto) {
+      nearestHtml = '<div class="mt-2 p-2 rounded-lg bg-emerald-50/80 border border-emerald-200 text-[11px] text-gray-700 space-y-0.5">' +
+        (rep.nearest_ubs ? '<p>🏥 <b>UBS/USAFA próx.:</b> ' + escapeHtml(rep.nearest_ubs.name) + ' (' + rep.nearest_ubs.distance_meters + ' m)</p>' : '') +
+        (rep.nearest_ecoponto ? '<p>♻️ <b>Ecoponto próx.:</b> ' + escapeHtml(rep.nearest_ecoponto.name) + ' (' + rep.nearest_ecoponto.distance_meters + ' m)</p>' : '') +
+      '</div>';
     }
 
-    list.forEach(rep => {
-      const marker = L.marker([rep.lat, rep.lng], {
-        icon: createInteractiveMarker('#D97706', 'alert', '⚠️ Alerta')
-      });
+    const confirmBtnHtml = rep.status !== 'resolved'
+      ? '<button type="button" onclick="confirmReportFromMap(\'' + safeRepId + '\')" class="mt-2 w-full py-1.5 px-2.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold transition">' +
+          '👁️ Eu também vi este foco (' + confirmations + ')' +
+        '</button>'
+      : '<p class="mt-2 text-[11px] font-bold text-emerald-700">✔ Alerta solucionado (' + confirmations + ' confirmações)</p>';
 
-      const popupContent = 
-        '<div class="p-1 min-w-[230px] max-w-[270px]">' +
-          '<span class="bg-amber-100 text-amber-800 text-[10px] font-extrabold px-2 py-0.5 rounded uppercase">Alerta Sanitário • CuidAção</span>' +
-          '<h4 class="font-bold text-sm text-gray-900 mt-1">' + escapeHtml(rep.title) + '</h4>' +
-          '<p class="text-xs text-gray-600 mt-1 font-medium">📍 ' + escapeHtml(rep.address || 'Localização no mapa') + '</p>' +
-          '<p class="text-xs text-gray-500 mt-1 bg-amber-50 p-2 rounded-lg border border-amber-100">' + escapeHtml(rep.description) + '</p>' +
-        '</div>';
+    const modHtml = canModerate
+      ? '<div class="mt-2 pt-2 border-t border-gray-100">' +
+          '<label class="text-[10px] font-bold uppercase text-gray-400">Moderação Agente/Admin</label>' +
+          '<select onchange="changeReportStatusFromMap(\'' + safeRepId + '\', this.value)" class="mt-1 w-full p-1.5 text-xs border border-gray-300 rounded-lg bg-white font-semibold">' +
+            '<option value="pending"' + (rep.status === 'pending' ? ' selected' : '') + '>Em aberto</option>' +
+            '<option value="in_analysis"' + (rep.status === 'in_analysis' ? ' selected' : '') + '>Em análise</option>' +
+            '<option value="resolved"' + (rep.status === 'resolved' ? ' selected' : '') + '>Resolvido</option>' +
+            '<option value="rejected"' + (rep.status === 'rejected' ? ' selected' : '') + '>Arquivar / Rejeitar</option>' +
+          '</select>' +
+        '</div>'
+      : '';
 
-      marker.bindPopup(popupContent);
-      marker.on('click', () => {
-        map.panTo([rep.lat, rep.lng]);
-      });
-      reportsGroup.addLayer(marker);
+    const popupContent = 
+      '<div class="p-1 min-w-[245px] max-w-[295px]">' +
+        '<div class="flex items-center justify-between gap-1">' +
+          '<span class="bg-amber-100 text-amber-800 text-[10px] font-extrabold px-2 py-0.5 rounded uppercase">Alerta One Health</span>' +
+          '<span class="text-[10px] font-extrabold px-2 py-0.5 rounded ' + stMeta.badgeBg + '">' + escapeHtml(stMeta.text) + '</span>' +
+        '</div>' +
+        '<h4 class="font-bold text-sm text-gray-900 mt-1.5">' + escapeHtml(rep.title) + '</h4>' +
+        '<p class="text-xs text-gray-600 mt-1 font-medium">📍 ' + escapeHtml(rep.address || 'Localização no mapa') + '</p>' +
+        '<p class="text-xs text-gray-500 mt-1 bg-amber-50 p-2 rounded-lg border border-amber-100">' + escapeHtml(rep.description) + '</p>' +
+        nearestHtml +
+        confirmBtnHtml +
+        modHtml +
+      '</div>';
+
+    marker.bindPopup(popupContent);
+    marker.on('click', () => {
+      map.panTo([Number(rep.lat), Number(rep.lng)]);
     });
+    reportsGroup.addLayer(marker);
+  });
+
+  updateHeatmapLayerFromReports();
+}
+
+async function loadReports() {
+  if (reportsAbortController) {
+    reportsAbortController.abort();
+  }
+  const controller = new AbortController();
+  reportsAbortController = controller;
+  const reqSeq = ++reportsReqSeq;
+
+  try {
+    const res = await apiFetch('/api/v1/reports', { signal: controller.signal });
+    if (reqSeq !== reportsReqSeq) return;
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const json = await res.json();
+    if (reqSeq !== reportsReqSeq) return;
+    // Renderiza exatamente os alertas retornados pela API (sem re-injetar rep-pereque-1 se removido/resolvido)
+    renderReportsMarkers(json.data || []);
   } catch (err) {
-    console.error('Erro ao buscar alertas:', err);
+    if (err && err.name === 'AbortError') return;
+    if (reqSeq !== reportsReqSeq) return;
+    console.warn('Usando alertas offline de contingência:', err);
+    renderReportsMarkers(OFFLINE_FALLBACK_REPORTS);
   }
 }
 
@@ -1968,6 +2383,8 @@ function openSidebar(loc) {
   (loc.services || []).forEach(s => {
     sContainer.innerHTML += '<span class="text-xs bg-gray-100 text-gray-800 px-2.5 py-1 rounded-lg border border-gray-200 font-medium">✓ ' + escapeHtml(s) + '</span>';
   });
+
+  renderWeeklyHoursGrid(loc.opening_hours);
 
   const unlockedMetricsEl = document.getElementById('side-metrics-unlocked');
   if (unlockedMetricsEl) unlockedMetricsEl.classList.remove('hidden');
@@ -2024,13 +2441,100 @@ function closeSidebar() {
   selectedLocation = null;
 }
 
-function setFilter(domain) {
-  currentFilter = domain;
+const WEEKDAY_NAMES = ['Domingo', 'Segunda-feira', 'Terça-feira', 'Quarta-feira', 'Quinta-feira', 'Sexta-feira', 'Sábado'];
+
+function renderWeeklyHoursGrid(hoursMap) {
+  const container = document.getElementById('side-weekly-hours');
+  if (!container) return;
+  const todayIdx = new Date().getDay();
+  let html = '';
+  for (let d = 0; d < 7; d++) {
+    const sched = hoursMap && hoursMap[String(d)];
+    const isToday = d === todayIdx;
+    let hoursLabel = 'Fechado';
+    if (sched) {
+      hoursLabel = (sched.open === '00:00' && sched.close === '23:59')
+        ? '24 horas'
+        : (sched.open + ' às ' + sched.close);
+    }
+    const rowCls = isToday
+      ? 'bg-emerald-50 border-emerald-300 text-emerald-950 font-bold'
+      : 'bg-gray-50 border-gray-100 text-gray-600';
+    html +=
+      '<div class="flex items-center justify-between px-2.5 py-1 rounded-lg border ' + rowCls + '">' +
+        '<span>' + WEEKDAY_NAMES[d] + (isToday ? ' (Hoje)' : '') + '</span>' +
+        '<span>' + escapeHtml(hoursLabel) + '</span>' +
+      '</div>';
+  }
+  container.innerHTML = html;
+}
+
+function updateFilterButtonsUI() {
   document.querySelectorAll('.filter-tab').forEach(b => {
     b.className = 'filter-tab px-2.5 py-1.5 rounded-xl text-xs font-bold text-gray-700 hover:bg-gray-100 transition';
   });
-  const activeBtn = domain === 'all' ? 'btn-filter-all' : (domain === 'health' ? 'btn-filter-health' : 'btn-filter-env');
-  document.getElementById(activeBtn).className = 'filter-tab px-2.5 py-1.5 rounded-xl text-xs font-bold bg-gray-900 text-white transition';
+  const mapDomainBtn = {
+    all: 'btn-filter-all',
+    health: 'btn-filter-health',
+    animal: 'btn-filter-animal',
+    environment: 'btn-filter-env'
+  };
+  const activeDomainBtn = document.getElementById(mapDomainBtn[currentFilter] || 'btn-filter-all');
+  if (activeDomainBtn && currentCategory === 'all' && !onlyPopularPharmacy) {
+    activeDomainBtn.className = 'filter-tab px-2.5 py-1.5 rounded-xl text-xs font-bold bg-gray-900 text-white transition';
+  }
+
+  const activeChipKey = onlyPopularPharmacy ? 'farmacia_popular' : currentCategory;
+  document.querySelectorAll('.granular-chip').forEach(chip => {
+    const isSelected = chip.getAttribute('data-cat-chip') === activeChipKey;
+    chip.className = isSelected
+      ? 'granular-chip px-2 py-1 rounded-lg text-[11px] font-bold bg-emerald-600 text-white whitespace-nowrap transition shadow-sm'
+      : 'granular-chip px-2 py-1 rounded-lg text-[11px] font-bold bg-gray-100 text-gray-700 hover:bg-emerald-50 hover:text-emerald-800 whitespace-nowrap transition';
+  });
+
+  const openNowBtn = document.getElementById('btn-filter-open-now');
+  if (openNowBtn) {
+    openNowBtn.setAttribute('aria-pressed', String(onlyOpenNow));
+    openNowBtn.className = onlyOpenNow
+      ? 'px-2 py-1 rounded-lg text-[11px] font-bold bg-emerald-700 text-white whitespace-nowrap transition ml-auto shadow-sm'
+      : 'px-2 py-1 rounded-lg text-[11px] font-bold bg-gray-100 text-gray-700 hover:bg-emerald-50 hover:text-emerald-800 whitespace-nowrap transition ml-auto';
+  }
+}
+
+function setFilter(domain) {
+  currentFilter = domain;
+  currentCategory = 'all';
+  onlyPopularPharmacy = false;
+  updateFilterButtonsUI();
+  loadLocations();
+}
+
+function setCategoryFilter(catKey) {
+  const currentKey = onlyPopularPharmacy ? 'farmacia_popular' : currentCategory;
+  if (currentKey === catKey) {
+    // Clicar novamente limpa o filtro granular e volta para Todos
+    currentCategory = 'all';
+    onlyPopularPharmacy = false;
+    currentFilter = 'all';
+  } else if (catKey === 'farmacia_popular') {
+    currentFilter = 'health';
+    currentCategory = 'cat-3';
+    onlyPopularPharmacy = true;
+    pharmaciesVisible = true;
+  } else {
+    onlyPopularPharmacy = false;
+    currentCategory = catKey;
+    if (catKey === 'cat-1' || catKey === 'cat-2') currentFilter = 'health';
+    else if (catKey === 'cat-4' || catKey === 'cat-5') currentFilter = 'environment';
+    else if (catKey === 'cat-6') currentFilter = 'animal';
+  }
+  updateFilterButtonsUI();
+  loadLocations();
+}
+
+function toggleOpenNowFilter() {
+  onlyOpenNow = !onlyOpenNow;
+  updateFilterButtonsUI();
   loadLocations();
 }
 
@@ -2131,101 +2635,74 @@ function renderCepHighlightMarker(lat, lon, addressData) {
 
 async function searchByCep(rawInput) {
   const searchBtn = document.getElementById('btn-cep-search');
-
-  // a) Limpa a formatação do CEP digitado (apenas números, 8 dígitos)
   const cep = String(rawInput || '').replace(/\D/g, '');
 
   if (cep.length !== 8) {
-    const msg = 'CEP inválido. Digite um CEP válido com 8 números (ex: 01001-000 ou 11446000).';
+    const msg = 'CEP inválido. Digite um CEP válido com 8 números (ex: 11446-000).';
     showCepFeedback(msg, 'error');
     showToast(msg, 'error');
     return;
   }
+
+  const formattedCep = cep.slice(0, 5) + '-' + cep.slice(5);
 
   try {
     if (searchBtn) {
       searchBtn.disabled = true;
       searchBtn.innerHTML = '<span>...</span>';
     }
-    showCepFeedback('Consultando CEP ' + cep.slice(0, 5) + '-' + cep.slice(5) + '...', 'info');
+    showCepFeedback('Consultando CEP ' + formattedCep + '...', 'info');
 
-    // b) Consulta a API gratuita do ViaCEP
-    const viaCepResponse = await fetch(`https://viacep.com.br/ws/${cep}/json/`);
-    if (!viaCepResponse.ok) {
-      throw new Error('Falha ao consultar o serviço ViaCEP.');
+    // Centralizado no backend (/api/v1/geo/search): usa geoCache, fila Nominatim 1,1s e atalho Perequê
+    const res = await apiFetch('/api/v1/geo/search?q=' + encodeURIComponent(formattedCep));
+    if (!res.ok) {
+      throw new Error('Falha ao consultar o serviço de geocodificação.');
     }
 
-    const data = await viaCepResponse.json();
+    const payload = await res.json();
+    const results = Array.isArray(payload.results) ? payload.results : [];
 
-    // c) Caso o CEP seja inválido ou não encontrado, exibe aviso amigável
-    if (!data || data.erro) {
-      const notFoundMsg = 'CEP não encontrado. Verifique os números informados e tente novamente.';
+    if (payload.cepNotFound || results.length === 0) {
+      const notFoundMsg = 'CEP ' + formattedCep + ' não encontrado. Verifique os números informados e tente novamente.';
       showCepFeedback(notFoundMsg, 'error');
       showToast(notFoundMsg, 'error');
       return;
     }
 
-    // d) Consulta a API gratuita do Nominatim/OpenStreetMap para obter latitude e longitude
-    const primaryQuery = `${data.logradouro}, ${data.bairro}, ${data.localidade} - ${data.uf}, Brasil`;
-    const primaryUrl = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(primaryQuery)}&limit=1`;
-
-    let geoResults = [];
-    if (data.logradouro) {
-      const nominatimRes = await fetch(primaryUrl, {
-        headers: { 'Accept-Language': 'pt-BR,pt;q=0.9' }
-      });
-      if (nominatimRes.ok) {
-        geoResults = await nominatimRes.json();
-      }
-    }
-
-    // Fallback buscando apenas "${data.bairro}, ${data.localidade} - ${data.uf}" caso o logradouro não traga resultado
-    if (!Array.isArray(geoResults) || geoResults.length === 0) {
-      const fallbackQuery = `${data.bairro}, ${data.localidade} - ${data.uf}`;
-      const fallbackUrl = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(fallbackQuery)}&limit=1`;
-      const fallbackRes = await fetch(fallbackUrl, {
-        headers: { 'Accept-Language': 'pt-BR,pt;q=0.9' }
-      });
-      if (fallbackRes.ok) {
-        geoResults = await fallbackRes.json();
-      }
-    }
-
-    // Fallback adicional para CEPs gerais de município sem bairro específico
-    if (!Array.isArray(geoResults) || geoResults.length === 0) {
-      const cityFallbackQuery = `${data.localidade} - ${data.uf}, Brasil`;
-      const cityFallbackUrl = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(cityFallbackQuery)}&limit=1`;
-      const cityRes = await fetch(cityFallbackUrl, {
-        headers: { 'Accept-Language': 'pt-BR,pt;q=0.9' }
-      });
-      if (cityRes.ok) {
-        geoResults = await cityRes.json();
-      }
-    }
-
-    if (!Array.isArray(geoResults) || geoResults.length === 0) {
-      const noCoordMsg = 'Endereço encontrado no ViaCEP, mas não foi possível localizar as coordenadas no mapa.';
-      showCepFeedback(noCoordMsg, 'error');
-      showToast(noCoordMsg, 'error');
-      return;
-    }
-
-    const lat = parseFloat(geoResults[0].lat);
-    const lon = parseFloat(geoResults[0].lon);
+    const best = results[0];
+    const lat = parseFloat(best.lat);
+    const lon = parseFloat(best.lng);
 
     if (isNaN(lat) || isNaN(lon)) {
       throw new Error('Coordenadas retornadas são inválidas.');
     }
 
-    // e) Move a câmera do Leaflet usando map.setView([lat, lon], 16) com animação suave
+    const inCoverage = typeof best.inCoverage === 'boolean' ? best.inCoverage : isInGuarujaCoverage(lat, lon);
+    const cityLabel = [best.city || best.localidade, best.uf || best.state].filter(Boolean).join('/');
+
+    if (!inCoverage) {
+      const outMsg = 'O CEP ' + formattedCep + (cityLabel ? ' (' + cityLabel + ')' : '') +
+        ' fica fora da área de cobertura do CuidAção (Guarujá/SP). O mapa permanece ancorado no Guarujá.';
+      showCepFeedback(outMsg, 'error');
+      showToast(outMsg, 'error');
+      return;
+    }
+
     if (map) {
       map.setView([lat, lon], 16, { animate: true, duration: 0.9 });
     }
 
-    // f) Cria (ou move) um marcador de destaque nessa posição com popup formatado (Rua, Bairro, Cidade/UF)
-    renderCepHighlightMarker(lat, lon, data);
+    const addressData = {
+      logradouro: best.logradouro || best.displayName || 'Logradouro localizado',
+      bairro: best.bairro || best.neighborhood || 'Guarujá',
+      localidade: best.localidade || best.city || 'Guarujá',
+      uf: best.uf || best.state || 'SP',
+      cep: best.cep || formattedCep
+    };
 
-    const summaryAddress = [data.logradouro, data.bairro, `${data.localidade}/${data.uf}`]
+    renderCepHighlightMarker(lat, lon, addressData);
+
+    const summaryAddress = [addressData.logradouro, addressData.bairro, `${addressData.localidade}/${addressData.uf}`]
       .filter(Boolean)
       .join(' • ');
     showCepFeedback('Localizado: ' + summaryAddress, 'success');
@@ -2243,24 +2720,35 @@ async function searchByCep(rawInput) {
   }
 }
 
-function handleCepSearchSubmit() {
+async function handleCepSearchSubmit() {
   const inputEl = document.getElementById('search-input');
   if (!inputEl) return;
   const rawValue = inputEl.value.trim();
+  if (!rawValue) return;
 
-  // Caso o usuário tenha digitado um texto de filtro de unidades (ex: "UBS", "UPA") sem dígitos,
-  // e exista correspondência direta nos locais, foca no primeiro local ou executa a validação de CEP
-  const digits = rawValue.replace(/\D/g, '');
-  if (rawValue && digits.length === 0 && cachedLocations.length > 0) {
+  // Trata como CEP apenas quando corresponde a formato de CEP (ex: 11446-000 ou somente dígitos com traço/ponto)
+  const isCepFormat = /^\d{5}-?\d{3}$/.test(rawValue) || /^[\d.\s-]+$/.test(rawValue);
+  if (isCepFormat) {
+    await searchByCep(rawValue);
+    return;
+  }
+
+  // Busca textual de unidades (ex: "UPA 24h", "SAMU 192", "USAFA Perequê")
+  clearTimeout(searchDebounce);
+  currentSearch = rawValue;
+  await loadLocations();
+
+  if (cachedLocations.length > 0) {
     const firstLoc = cachedLocations[0];
     if (map && firstLoc) {
       map.setView([firstLoc.lat, firstLoc.lng], 16, { animate: true, duration: 0.9 });
       openSidebar(firstLoc);
-      return;
     }
+  } else {
+    const msg = 'Nenhuma unidade encontrada para "' + rawValue + '" no raio selecionado.';
+    showCepFeedback(msg, 'info');
+    showToast(msg, 'info');
   }
-
-  searchByCep(rawValue);
 }
 
 function changeRadius(val) {
@@ -2279,11 +2767,13 @@ async function syncOsmLive() {
   btn.disabled = true;
 
   try {
-    const res = await fetch(API_BASE + '/api/v1/seed/osm-live', {
+    const res = await apiFetch('/api/v1/seed/osm-live', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
+      auth: true,
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ lat: userCoords.lat, lng: userCoords.lng, radius: currentRadius })
     });
+    if (res.status === 401) return;
     const data = await res.json();
     showToast(data.message || data.error || 'Sincronização com OpenStreetMap concluída!', res.ok ? 'success' : 'error');
     loadLocations();
@@ -2495,6 +2985,7 @@ function fillDemoCredentials() {
 function showHomeScreen() {
   const homeEl = document.getElementById('home-screen');
   if (!homeEl) return;
+  updateHomeScreenCta();
   homeEl.classList.remove('hidden');
   requestAnimationFrame(() => {
     homeEl.classList.remove('opacity-0');
@@ -2515,38 +3006,69 @@ function hideHomeScreen() {
     setTimeout(() => {
       map.invalidateSize({ animate: false });
       map.setView([userCoords.lat, userCoords.lng], map.getZoom() || 15.5, { animate: false });
-      detectAndApplyUserLocation(false);
+      if (!liveGpsTracker || !liveGpsTracker.isActive()) {
+        startLiveGpsTracking();
+      }
     }, 60);
   }
 }
 
 function enterAsGuest() {
-  authToken = null;
-  currentUser = null;
-  localStorage.removeItem('cuidacao_token');
-  localStorage.removeItem('onehealth_token');
+  // Preserva sessão válida já existente (não destrói cuidacao_token ao voltar para a tela inicial)
+  if (authToken && isTokenValid(authToken) && currentUser) {
+    renderAuthBox();
+    hideHomeScreen();
+    if (selectedLocation) openSidebar(selectedLocation);
+    showToast('Continuando sessão como ' + currentUser.name + '!', 'success');
+    return;
+  }
+
+  if (authToken && !isTokenValid(authToken)) {
+    authToken = null;
+    currentUser = null;
+    localStorage.removeItem('cuidacao_token');
+    localStorage.removeItem('onehealth_token');
+  }
+
   renderAuthBox();
   hideHomeScreen();
-  loadLocations();
   if (selectedLocation) openSidebar(selectedLocation);
   showToast('Modo Visitante ativo no Bairro do Perequê (Guarujá/SP)!', 'info');
 }
 
-function openLoginModal() { document.getElementById('modal-login').classList.remove('hidden'); }
+function openLoginModal() {
+  updateDemoLoginVisibility();
+  switchAuthTab(authMode || 'login');
+  document.getElementById('modal-login').classList.remove('hidden');
+}
 function closeLoginModal() { document.getElementById('modal-login').classList.add('hidden'); }
 
 function switchAuthTab(mode) {
   authMode = mode;
+  const passEl = document.getElementById('auth-pass');
+  const nameEl = document.getElementById('auth-name');
   if (mode === 'login') {
     document.getElementById('tab-login').className = 'flex-1 pb-2 border-b-2 border-emerald-600 text-emerald-600';
     document.getElementById('tab-register').className = 'flex-1 pb-2 border-b-2 border-transparent text-gray-400';
     document.getElementById('field-name').classList.add('hidden');
     document.getElementById('btn-auth-submit').innerText = 'Entrar';
+    if (nameEl) nameEl.required = false;
+    if (passEl) {
+      passEl.removeAttribute('minlength');
+      passEl.setAttribute('maxlength', '128');
+      passEl.placeholder = 'Sua senha (mín. 8 no cadastro)';
+    }
   } else {
     document.getElementById('tab-register').className = 'flex-1 pb-2 border-b-2 border-emerald-600 text-emerald-600';
     document.getElementById('tab-login').className = 'flex-1 pb-2 border-b-2 border-transparent text-gray-400';
     document.getElementById('field-name').classList.remove('hidden');
     document.getElementById('btn-auth-submit').innerText = 'Criar Conta';
+    if (nameEl) nameEl.required = true;
+    if (passEl) {
+      passEl.setAttribute('minlength', '8');
+      passEl.setAttribute('maxlength', '128');
+      passEl.placeholder = 'Mínimo de 8 caracteres';
+    }
   }
 }
 
@@ -2575,6 +3097,7 @@ async function handleAuthSubmit(e) {
       closeLoginModal();
       hideHomeScreen();
       loadLocations();
+      if (communityFeedController) communityFeedController.reload();
       if (selectedLocation) openSidebar(selectedLocation);
       showToast('Autenticado com sucesso como ' + currentUser.name + '!', 'success');
     } else {
@@ -2586,6 +3109,8 @@ async function handleAuthSubmit(e) {
 }
 
 function renderAuthBox() {
+  updateHomeScreenCta();
+  updateDemoLoginVisibility();
   const container = document.getElementById('auth-box');
   if (currentUser && currentUser.name) {
     const firstName = currentUser.name.split(' ')[0];
@@ -2652,14 +3177,18 @@ async function handleReviewSubmit(e) {
   };
 
   try {
-    const res = await fetch(API_BASE + '/api/v1/locations/' + selectedLocation.id + '/reviews', {
+    const res = await apiFetch('/api/v1/locations/' + encodeURIComponent(selectedLocation.id) + '/reviews', {
       method: 'POST',
+      auth: true,
       headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + authToken
+        'Content-Type': 'application/json'
       },
       body: JSON.stringify(payload)
     });
+    if (res.status === 401) {
+      closeReviewModal();
+      return;
+    }
     const json = await res.json();
 
     if (res.ok) {
@@ -2772,15 +3301,29 @@ async function handleReportSubmit(e) {
   };
 
   try {
-    const res = await fetch(API_BASE + '/api/v1/reports', {
+    const res = await apiFetch('/api/v1/reports', {
       method: 'POST',
+      auth: true,
       headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + authToken
+        'Content-Type': 'application/json'
       },
       body: JSON.stringify(payload)
     });
+    if (res.status === 401) {
+      closeReportModal();
+      return;
+    }
     const json = await res.json();
+
+    if (res.status === 409 && json.duplicate_of) {
+      closeReportModal();
+      showToast(json.message || 'Já existe um alerta deste tipo a menos de 50m! Confirmando alerta existente...', 'info');
+      await confirmReportFromMap(json.duplicate_of.id);
+      if (map && Number.isFinite(Number(json.duplicate_of.lat)) && Number.isFinite(Number(json.duplicate_of.lng))) {
+        map.flyTo([Number(json.duplicate_of.lat), Number(json.duplicate_of.lng)], 17, { animate: true, duration: 0.9 });
+      }
+      return;
+    }
 
     if (res.ok) {
       showToast('Alerta comunitário publicado no mapa do CuidAção!', 'success');
@@ -2789,6 +3332,7 @@ async function handleReportSubmit(e) {
       reportTargetCoords = null;
       closeReportModal();
       loadReports();
+      if (communityFeedController) communityFeedController.reload();
       if (map) {
         map.flyTo([coords.lat, coords.lng], 17, { animate: true, duration: 0.9 });
       }
@@ -2856,38 +3400,11 @@ if (IS_NATIVE_APP && window.Capacitor.Plugins && window.Capacitor.Plugins.App) {
 }
 
 // ============================================================================
-// BARRA DE COMUNIDADE E ALERTAS INTEGRADA AO SITE DO TCC (100% SVG, SEM EMOJIS)
+// BARRA DE COMUNIDADE E ALERTAS INTEGRADA À API REST + FILA OFFLINE
+// (Usa módulo compartilhado public/js/community/feed.js)
 // ============================================================================
-const CB_STORAGE_KEY = 'comunidade.alertas.v1';
-const CB_COMMENT_MAX = 225;
-const CB_DETAILS_MAX = 1000;
-const CB_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
-const CB_IMAGE_MAX_SIDE = 1280;
-const CB_IMAGE_QUALITY = 0.82;
-const CB_RATING_LABELS = ['Selecione de 1 a 5', 'Ruim', 'Regular', 'Bom', 'Muito bom', 'Excelente'];
-const CB_DEFAULT_POST_SVG =
-  'data:image/svg+xml;utf8,' +
-  encodeURIComponent(
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360">' +
-      '<defs>' +
-        '<linearGradient id="g" x1="0" y1="0" x2="1" y2="1">' +
-          '<stop offset="0%" stop-color="#1f4d3f"/>' +
-          '<stop offset="100%" stop-color="#2f6f5e"/>' +
-        '</linearGradient>' +
-      '</defs>' +
-      '<rect width="640" height="360" fill="url(#g)"/>' +
-      '<circle cx="520" cy="88" r="42" fill="#e8f1ee" fill-opacity="0.16"/>' +
-      '<path d="M0 280 Q160 220 320 265 T640 245 L640 360 L0 360 Z" fill="#173a30" fill-opacity="0.55"/>' +
-      '<g fill="none" stroke="#e8f1ee" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" opacity="0.9">' +
-        '<rect x="276" y="116" width="88" height="88" rx="18" fill="#e8f1ee" fill-opacity="0.12"/>' +
-        '<path d="M320 138v44M298 160h44"/>' +
-      '</g>' +
-      '<text x="320" y="242" text-anchor="middle" fill="#ffffff" font-family="system-ui,sans-serif" font-size="20" font-weight="700">Ação Comunitária • Bairro do Perequê</text>' +
-      '<text x="320" y="268" text-anchor="middle" fill="#d3e6df" font-family="system-ui,sans-serif" font-size="14">Mutirão de Saúde Única e Limpeza Costeira</text>' +
-    '</svg>'
-  );
-
 let cbInitialized = false;
+let communityFeedController = null;
 
 function openCommunityBar() {
   const bar = document.getElementById('community-bar');
@@ -2896,6 +3413,7 @@ function openCommunityBar() {
   bar.classList.remove('hidden');
   const btn = document.getElementById('btn-community-bar');
   if (btn) btn.setAttribute('aria-expanded', 'true');
+  if (communityFeedController) communityFeedController.reload();
 }
 
 function closeCommunityBar() {
@@ -2919,545 +3437,65 @@ function toggleCommunityBar() {
 function initCommunityBar() {
   if (cbInitialized) return;
   const bar = document.getElementById('community-bar');
-  if (!bar) return;
+  if (!bar || !window.CuidacaoCommunityFeed) return;
   cbInitialized = true;
 
-  const $ = (sel, root) => (root || bar).querySelector(sel);
-  const els = {
-    form: $('#cb-post-form'),
-    fileInput: $('#cb-post-image'),
-    dropzone: $('#cb-dropzone'),
-    preview: $('#cb-preview'),
-    previewImg: $('#cb-preview-img'),
-    previewChange: $('#cb-preview-change'),
-    previewRemove: $('#cb-preview-remove'),
-    details: $('#cb-post-details'),
-    detailsCount: $('#cb-details-count'),
-    rating: $('#cb-post-rating'),
-    ratingCaption: $('#cb-rating-caption'),
-    error: $('#cb-post-error'),
-    submit: $('#cb-post-submit'),
-    feed: $('#cb-feed'),
-    feedEmpty: $('#cb-feed-empty'),
-    feedCount: $('#cb-feed-count'),
-    tplPost: $('#cb-tpl-post'),
-    tplComment: $('#cb-tpl-comment'),
-    headerBadge: document.getElementById('community-bar-badge')
-  };
-
-  const state = {
-    posts: loadCbPosts(),
-    rating: 0,
-    image: { token: 0, job: null }
-  };
-  const stars = [];
-
-  function cbUid() {
-    if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
-    return Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
-  }
-
-  function pluralize(n, one, many) {
-    return n + ' ' + (n === 1 ? one : many);
-  }
-
-  const rtf = (typeof Intl !== 'undefined' && Intl.RelativeTimeFormat)
-    ? new Intl.RelativeTimeFormat('pt-BR', { numeric: 'auto' })
-    : null;
-
-  function relativeTime(ts) {
-    const diff = (ts - Date.now()) / 1000;
-    const abs = Math.abs(diff);
-    if (abs < 45) return 'agora';
-    if (!rtf) return new Date(ts).toLocaleString('pt-BR');
-    const units = [
-      ['year', 31557600],
-      ['month', 2629800],
-      ['week', 604800],
-      ['day', 86400],
-      ['hour', 3600],
-      ['minute', 60]
-    ];
-    for (let i = 0; i < units.length; i++) {
-      if (abs >= units[i][1] || units[i][0] === 'minute') {
-        return rtf.format(Math.round(diff / units[i][1]), units[i][0]);
+  communityFeedController = window.CuidacaoCommunityFeed.mount({
+    root: bar,
+    apiBase: API_BASE,
+    spritePrefix: 'cb-',
+    iconClass: 'cb-icon',
+    starBtnClass: 'cb-star',
+    selectors: {
+      form: '#cb-post-form',
+      fileInput: '#cb-post-image',
+      dropzone: '#cb-dropzone',
+      preview: '#cb-preview',
+      previewImg: '#cb-preview-img',
+      previewChange: '#cb-preview-change',
+      previewRemove: '#cb-preview-remove',
+      typeSelect: '#cb-post-type',
+      includeCoords: '#cb-include-coords',
+      details: '#cb-post-details',
+      detailsCount: '#cb-details-count',
+      rating: '#cb-post-rating',
+      ratingCaption: '#cb-rating-caption',
+      error: '#cb-post-error',
+      submit: '#cb-post-submit',
+      feed: '#cb-feed',
+      feedEmpty: '#cb-feed-empty',
+      feedCount: '#cb-feed-count',
+      tplPost: '#cb-tpl-post',
+      tplComment: '#cb-tpl-comment',
+      badge: '#community-bar-badge'
+    },
+    getAuthToken: () => authToken,
+    getCurrentUser: () => currentUser,
+    getCoordinates: () => ({
+      lat: userCoords.lat,
+      lng: userCoords.lng,
+      address: currentAddressLabel || 'Bairro do Perequê, Guarujá - SP'
+    }),
+    onAuthRequired: () => {
+      openLoginModal();
+    },
+    onUnauthorized: () => {
+      clearExpiredOrInvalidSession(true, 'Sessão expirada ou inválida. Faça login novamente.');
+    },
+    onReportsChanged: () => {
+      loadReports();
+    },
+    onFocusMapPoint: (post) => {
+      if (map && post.lat !== null && post.lng !== null) {
+        closeCommunityBar();
+        hideHomeScreen();
+        map.flyTo([post.lat, post.lng], 17, { animate: true, duration: 0.9 });
       }
-    }
-    return '';
-  }
-
-  function setTime(el, ts) {
-    const d = new Date(ts);
-    el.dateTime = d.toISOString();
-    el.dataset.cbTs = String(ts);
-    el.title = d.toLocaleString('pt-BR');
-    el.textContent = relativeTime(ts);
-  }
-
-  function svgUse(id, className) {
-    const ns = 'http://www.w3.org/2000/svg';
-    const svg = document.createElementNS(ns, 'svg');
-    svg.setAttribute('class', 'cb-icon' + (className ? ' ' + className : ''));
-    svg.setAttribute('aria-hidden', 'true');
-    svg.setAttribute('focusable', 'false');
-    const use = document.createElementNS(ns, 'use');
-    use.setAttribute('href', '#' + id);
-    svg.appendChild(use);
-    return svg;
-  }
-
-  function sanitizeCbPost(p) {
-    if (!p || typeof p !== 'object') return null;
-    if (typeof p.image !== 'string' || p.image.indexOf('data:image/') !== 0) return null;
-    const rating = Math.round(Number(p.rating));
-    if (!(rating >= 1 && rating <= 5)) return null;
-    const details = String(p.details || '').slice(0, CB_DETAILS_MAX);
-    if (!details.trim()) return null;
-    const comments = Array.isArray(p.comments) ? p.comments : [];
-    return {
-      id: String(p.id || cbUid()),
-      image: p.image,
-      details,
-      rating,
-      createdAt: Number(p.createdAt) || Date.now(),
-      comments: comments
-        .filter(c => c && typeof c.text === 'string' && c.text.trim())
-        .map(c => ({
-          id: String(c.id || cbUid()),
-          author: String(c.author || 'Morador').slice(0, 60),
-          text: c.text.slice(0, CB_COMMENT_MAX),
-          createdAt: Number(c.createdAt) || Date.now()
-        }))
-    };
-  }
-
-  function loadCbPosts() {
-    try {
-      const raw = localStorage.getItem(CB_STORAGE_KEY);
-      if (raw !== null) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) {
-          return parsed.map(sanitizeCbPost).filter(Boolean);
-        }
-      }
-    } catch {
-      // Continua para o seed inicial
-    }
-    const seed = [
-      {
-        id: 'cb-seed-pereque-1',
-        image: CB_DEFAULT_POST_SVG,
-        details: 'Mutirão comunitário de prevenção à dengue e recolhimento de recicláveis na Av. Rio Amazonas (Perequê). Equipe de agentes de saúde orientando moradores sobre descarte correto e pontos do Ecoponto.',
-        rating: 5,
-        createdAt: Date.now() - 25 * 60 * 1000,
-        comments: [
-          {
-            id: 'cb-comm-1',
-            author: 'Morador do Perequê',
-            text: 'Excelente mobilização na Av. Rio Amazonas. O caminhão de coleta seletiva já retirou os materiais descartados perto da praça.',
-            createdAt: Date.now() - 10 * 60 * 1000
-          }
-        ]
-      }
-    ];
-    try {
-      localStorage.setItem(CB_STORAGE_KEY, JSON.stringify(seed));
-    } catch {
-      // Ignora
-    }
-    return seed;
-  }
-
-  function saveCbPosts() {
-    try {
-      localStorage.setItem(CB_STORAGE_KEY, JSON.stringify(state.posts));
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  // 1. Upload de imagem com preview instantâneo via FileReader
-  function readFileAsDataURL(file) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result);
-      reader.onerror = () => reject(reader.error);
-      reader.readAsDataURL(file);
-    });
-  }
-
-  function loadImageElement(src) {
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      img.onload = () => resolve(img);
-      img.onerror = reject;
-      img.src = src;
-    });
-  }
-
-  function optimizeImage(dataUrl) {
-    return loadImageElement(dataUrl).then(img => {
-      const w = img.naturalWidth;
-      const h = img.naturalHeight;
-      const scale = Math.min(1, CB_IMAGE_MAX_SIDE / Math.max(w, h));
-      if (scale === 1 && dataUrl.length < 400000) return dataUrl;
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.round(w * scale);
-      canvas.height = Math.round(h * scale);
-      const ctx = canvas.getContext('2d');
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      return canvas.toDataURL('image/jpeg', CB_IMAGE_QUALITY);
-    });
-  }
-
-  function handleFile(file) {
-    hideError();
-    if (!file) return;
-    if (!/^image\//.test(file.type)) {
-      els.fileInput.value = '';
-      showError('Selecione um arquivo de imagem válido (JPG, PNG ou WebP).', els.fileInput);
-      return;
-    }
-    if (file.size > CB_IMAGE_MAX_BYTES) {
-      els.fileInput.value = '';
-      showError('A imagem deve ter no máximo 10 MB.', els.fileInput);
-      return;
-    }
-
-    const token = ++state.image.token;
-    readFileAsDataURL(file)
-      .then(dataUrl => {
-        if (token !== state.image.token) return;
-        els.previewImg.src = dataUrl;
-        els.preview.hidden = false;
-        els.dropzone.hidden = true;
-        state.image.job = optimizeImage(dataUrl).catch(() => dataUrl);
-      })
-      .catch(() => {
-        if (token === state.image.token) {
-          showError('Não foi possível ler a imagem selecionada.', els.fileInput);
-        }
-      });
-  }
-
-  function clearImage() {
-    state.image.token++;
-    state.image.job = null;
-    els.fileInput.value = '';
-    els.previewImg.removeAttribute('src');
-    els.preview.hidden = true;
-    els.dropzone.hidden = false;
-  }
-
-  els.fileInput.addEventListener('change', () => {
-    handleFile(els.fileInput.files && els.fileInput.files[0]);
-  });
-  els.previewChange.addEventListener('click', () => els.fileInput.click());
-  els.previewRemove.addEventListener('click', () => {
-    clearImage();
-    els.fileInput.focus();
-  });
-
-  ['dragenter', 'dragover'].forEach(type => {
-    els.dropzone.addEventListener(type, e => {
-      e.preventDefault();
-      els.dropzone.classList.add('is-dragover');
-    });
-  });
-  ['dragleave', 'drop'].forEach(type => {
-    els.dropzone.addEventListener(type, () => els.dropzone.classList.remove('is-dragover'));
-  });
-  els.dropzone.addEventListener('drop', e => {
-    e.preventDefault();
-    const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-    handleFile(file);
-  });
-
-  els.details.addEventListener('input', () => {
-    els.detailsCount.textContent = els.details.value.length + ' / ' + CB_DETAILS_MAX;
-    if (els.details.value.trim()) {
-      els.details.removeAttribute('aria-invalid');
-      hideError();
+    },
+    notify: (msg, kind) => {
+      showToast(msg, kind);
     }
   });
-
-  // Sistema de avaliação 1 a 5 estrelas (SVG interativo com hover e clique)
-  function buildRating() {
-    for (let i = 1; i <= 5; i++) {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'cb-star';
-      btn.dataset.value = String(i);
-      btn.setAttribute('role', 'radio');
-      btn.setAttribute('aria-checked', 'false');
-      btn.setAttribute('aria-label', pluralize(i, 'estrela', 'estrelas') + ', ' + CB_RATING_LABELS[i]);
-      btn.tabIndex = i === 1 ? 0 : -1;
-      btn.appendChild(svgUse('cb-star'));
-      els.rating.appendChild(btn);
-      stars.push(btn);
-    }
-  }
-
-  function paintStars(value) {
-    stars.forEach((star, idx) => star.classList.toggle('is-filled', idx < value));
-    els.ratingCaption.textContent = value ? value + ' de 5 · ' + CB_RATING_LABELS[value] : CB_RATING_LABELS[0];
-  }
-
-  function setRating(value, moveFocus) {
-    state.rating = value;
-    stars.forEach((star, idx) => {
-      const checked = idx + 1 === value;
-      star.setAttribute('aria-checked', String(checked));
-      star.tabIndex = (value ? checked : idx === 0) ? 0 : -1;
-    });
-    paintStars(value);
-    if (value) {
-      if (moveFocus) stars[value - 1].focus();
-      hideError();
-    }
-  }
-
-  els.rating.addEventListener('click', e => {
-    const star = e.target.closest('.cb-star');
-    if (star) setRating(Number(star.dataset.value), false);
-  });
-
-  els.rating.addEventListener('pointerover', e => {
-    if (e.pointerType !== 'mouse') return;
-    const star = e.target.closest('.cb-star');
-    if (star) paintStars(Number(star.dataset.value));
-  });
-  els.rating.addEventListener('pointerleave', () => paintStars(state.rating));
-
-  els.rating.addEventListener('keydown', e => {
-    const current = state.rating || 0;
-    let next = null;
-    if (e.key === 'ArrowRight' || e.key === 'ArrowUp') next = Math.min(5, current + 1);
-    else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') next = Math.max(1, current - 1);
-    else if (e.key === 'Home') next = 1;
-    else if (e.key === 'End') next = 5;
-    if (next !== null) {
-      e.preventDefault();
-      setRating(next, true);
-    }
-  });
-
-  function showError(message, focusEl) {
-    els.error.textContent = message;
-    els.error.hidden = false;
-    if (focusEl) focusEl.focus();
-  }
-
-  function hideError() {
-    els.error.hidden = true;
-    els.error.textContent = '';
-  }
-
-  function resetComposer() {
-    els.form.reset();
-    clearImage();
-    els.details.removeAttribute('aria-invalid');
-    els.detailsCount.textContent = '0 / ' + CB_DETAILS_MAX;
-    setRating(0, false);
-    hideError();
-  }
-
-  els.form.addEventListener('submit', e => {
-    e.preventDefault();
-    hideError();
-
-    const details = els.details.value.trim();
-    if (!state.image.job) {
-      showError('Anexe uma imagem do evento antes de publicar.', els.fileInput);
-      return;
-    }
-    if (!details) {
-      els.details.setAttribute('aria-invalid', 'true');
-      showError('Descreva os detalhes do evento ou alerta.', els.details);
-      return;
-    }
-    if (details.length > CB_DETAILS_MAX) {
-      els.details.setAttribute('aria-invalid', 'true');
-      showError('A descrição deve ter no máximo ' + CB_DETAILS_MAX + ' caracteres.', els.details);
-      return;
-    }
-    if (state.rating < 1 || state.rating > 5) {
-      showError('Selecione uma avaliação de 1 a 5 estrelas.', stars[0]);
-      return;
-    }
-
-    els.submit.disabled = true;
-    els.submit.textContent = 'Publicando...';
-
-    state.image.job
-      .then(image => {
-        const post = {
-          id: cbUid(),
-          image,
-          details,
-          rating: state.rating,
-          createdAt: Date.now(),
-          comments: []
-        };
-        state.posts.unshift(post);
-        saveCbPosts();
-
-        const node = renderCbPost(post);
-        els.feed.insertBefore(node, els.feed.firstChild);
-        updateFeedMeta();
-        resetComposer();
-        node.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-      })
-      .finally(() => {
-        els.submit.disabled = false;
-        els.submit.textContent = 'Publicar';
-      });
-  });
-
-  // 2. Renderização dos Cards do Feed
-  function renderStaticStars(container, rating) {
-    container.setAttribute('aria-label', 'Avaliação: ' + rating + ' de 5 estrelas');
-    for (let i = 1; i <= 5; i++) {
-      container.appendChild(svgUse('cb-star', i <= rating ? 'is-filled' : ''));
-    }
-  }
-
-  function renderCbComment(comment) {
-    const node = els.tplComment.content.firstElementChild.cloneNode(true);
-    $('.cb-comment-author', node).textContent = comment.author || 'Morador';
-    setTime($('.cb-comment-time', node), comment.createdAt);
-    $('.cb-comment-text', node).textContent = comment.text;
-    return node;
-  }
-
-  function renderCbPost(post) {
-    const node = els.tplPost.content.firstElementChild.cloneNode(true);
-    node.dataset.id = post.id;
-
-    const img = $('.cb-post-img', node);
-    img.src = post.image;
-    img.alt = 'Imagem do evento: ' + post.details.slice(0, 80);
-
-    renderStaticStars($('.cb-stars-static', node), post.rating);
-    setTime($('.cb-post-time', node), post.createdAt);
-    $('.cb-post-details', node).textContent = post.details;
-
-    const inputId = 'cb-comment-' + post.id;
-    const counterId = 'cb-counter-' + post.id;
-    const label = $('.cb-comment-label', node);
-    const textarea = $('.cb-comment-input', node);
-    const counter = $('.cb-counter', node);
-    label.htmlFor = inputId;
-    textarea.id = inputId;
-    counter.id = counterId;
-    textarea.setAttribute('aria-describedby', counterId);
-    textarea.maxLength = CB_COMMENT_MAX;
-    counter.textContent = '0 / ' + CB_COMMENT_MAX;
-
-    const list = $('.cb-comment-list', node);
-    post.comments.forEach(c => list.appendChild(renderCbComment(c)));
-    $('.cb-comments-count', node).textContent = String(post.comments.length);
-
-    return node;
-  }
-
-  function renderFeed() {
-    const frag = document.createDocumentFragment();
-    state.posts.forEach(p => frag.appendChild(renderCbPost(p)));
-    els.feed.textContent = '';
-    els.feed.appendChild(frag);
-    updateFeedMeta();
-  }
-
-  function updateFeedMeta() {
-    const n = state.posts.length;
-    els.feedEmpty.hidden = n > 0;
-    els.feedCount.textContent = n ? pluralize(n, 'publicação', 'publicações') : '';
-    if (els.headerBadge) {
-      els.headerBadge.textContent = String(n);
-    }
-  }
-
-  // 3. Sistema de Comentários no Card (limite estrito de 225 caracteres + contador dinâmico)
-  function setCommentError(form, message) {
-    const error = $('.cb-comment-error', form);
-    const textarea = $('.cb-comment-input', form);
-    error.textContent = message || '';
-    form.classList.toggle('has-error', !!message);
-    if (message) textarea.setAttribute('aria-invalid', 'true');
-    else textarea.removeAttribute('aria-invalid');
-  }
-
-  function updateCommentCounter(textarea) {
-    const form = textarea.form;
-    const length = textarea.value.length;
-    const counter = $('.cb-counter', form);
-    counter.textContent = length + ' / ' + CB_COMMENT_MAX;
-    counter.classList.toggle('is-limit', length >= CB_COMMENT_MAX);
-    form.classList.toggle('is-ready', textarea.value.trim().length > 0 && length <= CB_COMMENT_MAX);
-  }
-
-  els.feed.addEventListener('input', e => {
-    const textarea = e.target;
-    if (!textarea.classList || !textarea.classList.contains('cb-comment-input')) return;
-    updateCommentCounter(textarea);
-    if (textarea.value.trim()) setCommentError(textarea.form, '');
-  });
-
-  els.feed.addEventListener('submit', e => {
-    const form = e.target;
-    if (!form.classList.contains('cb-comment-form')) return;
-    e.preventDefault();
-
-    const textarea = $('.cb-comment-input', form);
-    const raw = textarea.value;
-    const text = raw.trim();
-
-    if (!text) {
-      setCommentError(form, 'Digite um comentário antes de enviar.');
-      textarea.focus();
-      return;
-    }
-    if (raw.length > CB_COMMENT_MAX || text.length > CB_COMMENT_MAX) {
-      setCommentError(form, 'O comentário não pode ultrapassar ' + CB_COMMENT_MAX + ' caracteres.');
-      textarea.focus();
-      return;
-    }
-
-    const postEl = form.closest('.cb-post');
-    const post = state.posts.find(p => p.id === postEl.dataset.id);
-    if (!post) return;
-
-    const authorName = (currentUser && currentUser.name) ? currentUser.name : 'Morador';
-    const comment = {
-      id: cbUid(),
-      author: authorName,
-      text,
-      createdAt: Date.now()
-    };
-    post.comments.unshift(comment);
-    saveCbPosts();
-
-    const list = $('.cb-comment-list', postEl);
-    list.insertBefore(renderCbComment(comment), list.firstChild);
-    $('.cb-comments-count', postEl).textContent = String(post.comments.length);
-
-    textarea.value = '';
-    setCommentError(form, '');
-    updateCommentCounter(textarea);
-  });
-
-  buildRating();
-  renderFeed();
-
-  setInterval(() => {
-    bar.querySelectorAll('time[data-cb-ts]').forEach(el => {
-      el.textContent = relativeTime(Number(el.dataset.cbTs));
-    });
-  }, 60000);
 }
 
 window.onload = initMap;

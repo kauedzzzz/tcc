@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Painel Analítico One Health • CuidAção Guarujá/SP</title>
+  <meta name="description" content="Indicadores territoriais de Saúde Única (One Health), ranking de unidades de saúde, correlação ambiental e exportação GeoJSON do Guarujá/SP.">
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#064E3B">
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="css/tailwind.min.css" />
+  <link rel="stylesheet" href="css/styles.css?v=7" />
+</head>
+<body class="bg-slate-50 text-slate-900 font-sans antialiased min-h-screen overflow-y-auto">
+
+  <!-- Cabeçalho Institucional -->
+  <header class="bg-gradient-to-r from-emerald-950 via-emerald-900 to-teal-900 text-white shadow-lg sticky top-0 z-30">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex flex-wrap items-center justify-between gap-3">
+      <div class="flex items-center gap-3">
+        <span class="text-2xl" aria-hidden="true">🌿</span>
+        <div>
+          <h1 class="text-lg sm:text-xl font-black tracking-tight">CuidAção • Painel Analítico One Health</h1>
+          <p class="text-xs text-emerald-200 font-medium">Inteligência Territorial em Saúde Humana, Saúde Animal e Sustentabilidade • Guarujá/SP</p>
+        </div>
+      </div>
+
+      <nav class="flex flex-wrap items-center gap-2 text-xs font-bold">
+        <a href="./" class="px-3.5 py-2 rounded-xl bg-white/15 hover:bg-white/25 text-white transition flex items-center gap-1.5">
+          <span>🗺️</span> <span>Mapa Interativo</span>
+        </a>
+        <a href="comunidade.html" class="px-3.5 py-2 rounded-xl bg-white/15 hover:bg-white/25 text-white transition flex items-center gap-1.5">
+          <span>💬</span> <span>Comunidade</span>
+        </a>
+        <a id="btn-export-geojson" href="/api/v1/export/reports.geojson" download="cuidacao-reports-guaruja.geojson" class="px-3.5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black shadow-md transition flex items-center gap-1.5">
+          <span>📥</span> <span>Exportar GeoJSON (QGIS)</span>
+        </a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-6">
+
+    <!-- Banner de Status / Atualização -->
+    <div id="analytics-status" class="hidden p-3.5 rounded-2xl bg-amber-50 border border-amber-200 text-amber-900 text-xs font-semibold"></div>
+
+    <!-- KPIs Principais -->
+    <section aria-label="Indicadores Principais" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div class="bg-white rounded-2xl p-5 shadow-sm border border-gray-200">
+        <p class="text-xs font-bold uppercase tracking-wider text-gray-400">Pontos Mapeados (SUS/SEMAM/CCZ)</p>
+        <p id="kpi-locations" class="text-3xl font-black text-emerald-700 mt-1">--</p>
+        <p id="kpi-reviews" class="text-xs text-gray-500 mt-1">-- avaliações comunitárias</p>
+      </div>
+
+      <div class="bg-white rounded-2xl p-5 shadow-sm border border-gray-200">
+        <p class="text-xs font-bold uppercase tracking-wider text-gray-400">Alertas Comunitários & Focos</p>
+        <p id="kpi-reports" class="text-3xl font-black text-amber-600 mt-1">--</p>
+        <p id="kpi-open-reports" class="text-xs text-gray-500 mt-1">-- em aberto / análise</p>
+      </div>
+
+      <div class="bg-white rounded-2xl p-5 shadow-sm border border-gray-200">
+        <p class="text-xs font-bold uppercase tracking-wider text-gray-400">Taxa de Resolução</p>
+        <p id="kpi-resolution" class="text-3xl font-black text-blue-600 mt-1">--%</p>
+        <p id="kpi-confirmations" class="text-xs text-gray-500 mt-1">-- confirmações ("Eu também vi")</p>
+      </div>
+
+      <div class="bg-white rounded-2xl p-5 shadow-sm border border-gray-200">
+        <p class="text-xs font-bold uppercase tracking-wider text-gray-400">Distância Média p/ Ecoponto</p>
+        <p id="kpi-eco-dist" class="text-3xl font-black text-teal-700 mt-1">-- m</p>
+        <p id="kpi-eco-far" class="text-xs text-gray-500 mt-1">--% dos focos a mais de 1 km</p>
+      </div>
+    </section>
+
+    <!-- Distribuição por Tipo One Health e Por Bairro -->
+    <section class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-200">
+        <h2 class="text-sm font-black uppercase tracking-wider text-gray-700">Alertas por Tipologia One Health</h2>
+        <p class="text-xs text-gray-500 mt-0.5">Saúde Humana (Arboviroses), Meio Ambiente (Resíduos/Esgoto) e Saúde Animal (Zoonoses/Fauna)</p>
+        <div id="chart-by-type" class="mt-4 space-y-3"></div>
+      </div>
+
+      <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-200">
+        <h2 class="text-sm font-black uppercase tracking-wider text-gray-700">Concentração Territorial por Bairro</h2>
+        <p class="text-xs text-gray-500 mt-0.5">Distribuição de relatos georreferenciados no Guarujá/SP</p>
+        <div id="chart-by-neighborhood" class="mt-4 space-y-2.5 max-h-72 overflow-y-auto pr-1"></div>
+      </div>
+    </section>
+
+    <!-- Ranking de Unidades Mais Bem Avaliadas & Correlação Territorial com Ecopontos -->
+    <section class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-200">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 class="text-sm font-black uppercase tracking-wider text-gray-700">Ranking de Unidades Mais Bem Avaliadas</h2>
+            <p class="text-xs text-gray-500 mt-0.5">Média geral, acessibilidade física, agilidade e atendimento humanizado</p>
+          </div>
+          <select id="ranking-criteria" aria-label="Critério do ranking" class="text-xs font-bold bg-gray-100 border border-gray-200 rounded-xl px-3 py-1.5">
+            <option value="overall">⭐ Nota Geral</option>
+            <option value="accessibility">♿ Acessibilidade Física</option>
+            <option value="wait_time">⏱️ Menor Tempo de Espera</option>
+            <option value="humanized_care">💚 Atendimento Humanizado</option>
+          </select>
+        </div>
+        <div id="list-rankings" class="mt-4 space-y-2.5"></div>
+      </div>
+
+      <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-200">
+        <h2 class="text-sm font-black uppercase tracking-wider text-gray-700">Correlação Territorial: Alertas vs. Ecopontos Próximos</h2>
+        <p class="text-xs text-gray-500 mt-0.5">Subsídio para planejamento público da SEMAM e Vigilância em Saúde (raio de 2 km por Ecoponto)</p>
+        <div id="list-ecoponto-correlation" class="mt-4 space-y-2.5"></div>
+
+        <!-- Atalhos de Emergência Pública -->
+        <div class="mt-6 pt-4 border-t border-gray-100">
+          <h3 class="text-xs font-extrabold uppercase tracking-wider text-gray-400">Canais Oficiais de Emergência e Vigilância</h3>
+          <div class="grid grid-cols-2 sm:grid-cols-3 gap-2 mt-2.5 text-xs font-bold">
+            <a href="tel:192" class="p-2.5 rounded-xl bg-red-50 text-red-700 border border-red-200 text-center hover:bg-red-100 transition">🚑 SAMU 192</a>
+            <a href="tel:199" class="p-2.5 rounded-xl bg-amber-50 text-amber-800 border border-amber-200 text-center hover:bg-amber-100 transition">🛟 Defesa Civil 199</a>
+            <a href="tel:193" class="p-2.5 rounded-xl bg-teal-50 text-teal-800 border border-teal-200 text-center hover:bg-teal-100 transition">🐾 Resgate Ambiental 193</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <script src="js/config.js"></script>
+  <script>
+  (function () {
+    'use strict';
+
+    var API_BASE = (window.CUIDACAO_CONFIG && window.CUIDACAO_CONFIG.apiBase) ||
+      (window.location.protocol === 'file:' ? 'http://localhost:3000' : '');
+
+    var exportLink = document.getElementById('btn-export-geojson');
+    if (exportLink && API_BASE) {
+      exportLink.href = API_BASE + '/api/v1/export/reports.geojson';
+    }
+
+    if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+      navigator.serviceWorker.register('sw.js').catch(function () {});
+    }
+
+    var TYPE_META = {
+      foco_dengue: { label: '🦟 Foco de Dengue / Água Parada', color: '#dc2626' },
+      descarte_irregular: { label: '🗑️ Descarte Irregular de Resíduos', color: '#d97706' },
+      terreno_baldio: { label: '🌿 Terreno Baldio / Mato Alto', color: '#ca8a04' },
+      esgoto_ceu_aberto: { label: '💧 Esgoto / Vazamento a Céu Aberto', color: '#2563eb' },
+      animal_ferido_silvestre: { label: '🦜 Animal Silvestre / Marinho Ferido', color: '#0d9488' },
+      risco_zoonose: { label: '🐾 Risco de Zoonose / Saúde Animal', color: '#7c3aed' }
+    };
+
+    var cachedData = null;
+
+    function esc(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function renderRankings(criteria) {
+      var container = document.getElementById('list-rankings');
+      if (!container || !cachedData || !cachedData.rankings) return;
+      var list = cachedData.rankings[criteria] || cachedData.rankings.overall || [];
+      if (list.length === 0) {
+        container.innerHTML = '<p class="text-xs text-gray-400 italic">Sem avaliações registradas ainda.</p>';
+        return;
+      }
+      var scoreKey = criteria === 'accessibility'
+        ? 'avg_accessibility'
+        : (criteria === 'wait_time' ? 'avg_wait_time' : (criteria === 'humanized_care' ? 'avg_humanized_care' : 'overall_score'));
+
+      container.innerHTML = list.slice(0, 6).map(function (loc, idx) {
+        var val = Number(loc[scoreKey] || 0).toFixed(1);
+        return (
+          '<div class="p-3 rounded-xl bg-gray-50 border border-gray-100 flex items-center justify-between gap-3">' +
+            '<div class="min-w-0 flex-1">' +
+              '<p class="text-xs font-extrabold text-gray-900 truncate">' + (idx + 1) + 'º • ' + esc(loc.name) + '</p>' +
+              '<p class="text-[11px] text-gray-500 mt-0.5">' + esc(loc.categoryName) + ' • ' + loc.total_reviews + ' aval.</p>' +
+            '</div>' +
+            '<span class="px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-900 text-xs font-black shrink-0">⭐ ' + val + '</span>' +
+          '</div>'
+        );
+      }).join('');
+    }
+
+    function renderSummary(data) {
+      cachedData = data;
+      var t = data.totals || {};
+      document.getElementById('kpi-locations').textContent = String(t.locations || 0);
+      document.getElementById('kpi-reviews').textContent = (t.total_reviews || 0) + ' avaliações comunitárias';
+      document.getElementById('kpi-reports').textContent = String(t.reports || 0);
+      document.getElementById('kpi-open-reports').textContent = (t.open_reports || 0) + ' em aberto / em análise';
+      document.getElementById('kpi-resolution').textContent = (t.resolution_rate_percent || 0) + '%';
+      document.getElementById('kpi-confirmations').textContent = (t.total_confirmations || 0) + ' confirmações comunitárias';
+
+      var tc = data.territorial_correlation || {};
+      document.getElementById('kpi-eco-dist').textContent = (tc.avg_distance_to_ecoponto_m || 0) + ' m';
+      document.getElementById('kpi-eco-far').textContent = (tc.percent_beyond_1km || 0) + '% dos focos a mais de 1 km de um Ecoponto';
+
+      // Gráfico por tipo
+      var byType = data.reports_by_type || {};
+      var maxType = Math.max(1, Object.values(byType).reduce(function (m, v) { return Math.max(m, v); }, 0));
+      var typeHtml = Object.keys(TYPE_META).map(function (key) {
+        var count = byType[key] || 0;
+        var pct = Math.round((count / maxType) * 100);
+        var meta = TYPE_META[key];
+        return (
+          '<div>' +
+            '<div class="flex justify-between text-xs font-bold text-gray-700 mb-1">' +
+              '<span>' + esc(meta.label) + '</span>' +
+              '<span>' + count + '</span>' +
+            '</div>' +
+            '<div class="w-full h-2.5 bg-gray-100 rounded-full overflow-hidden">' +
+              '<div class="h-full rounded-full" style="width:' + pct + '%;background-color:' + meta.color + ';"></div>' +
+            '</div>' +
+          '</div>'
+        );
+      }).join('');
+      document.getElementById('chart-by-type').innerHTML = typeHtml;
+
+      // Gráfico por bairro
+      var nbs = data.reports_by_neighborhood || [];
+      if (nbs.length === 0) {
+        document.getElementById('chart-by-neighborhood').innerHTML = '<p class="text-xs text-gray-400 italic">Nenhum alerta registrado por bairro.</p>';
+      } else {
+        var maxNb = Math.max(1, nbs[0].total);
+        document.getElementById('chart-by-neighborhood').innerHTML = nbs.map(function (nb) {
+          var pct = Math.round((nb.total / maxNb) * 100);
+          return (
+            '<div class="p-2.5 rounded-xl bg-gray-50 border border-gray-100">' +
+              '<div class="flex justify-between text-xs font-bold text-gray-800 mb-1">' +
+                '<span>📍 ' + esc(nb.neighborhood) + '</span>' +
+                '<span>' + nb.total + ' (' + nb.open + ' abertos • ' + nb.resolved + ' resolvidos)</span>' +
+              '</div>' +
+              '<div class="w-full h-2 bg-gray-200 rounded-full overflow-hidden">' +
+                '<div class="h-full bg-emerald-600 rounded-full" style="width:' + pct + '%;"></div>' +
+              '</div>' +
+            '</div>'
+          );
+        }).join('');
+      }
+
+      renderRankings(document.getElementById('ranking-criteria').value);
+
+      // Correlação por Ecoponto
+      var ecoList = tc.by_ecoponto || [];
+      document.getElementById('list-ecoponto-correlation').innerHTML = ecoList.map(function (eco) {
+        return (
+          '<div class="p-3 rounded-xl bg-blue-50/60 border border-blue-100 flex items-center justify-between gap-3">' +
+            '<div class="min-w-0 flex-1">' +
+              '<p class="text-xs font-bold text-gray-900 truncate">♻️ ' + esc(eco.name) + '</p>' +
+              '<p class="text-[11px] text-gray-500 truncate">' + esc(eco.address) + '</p>' +
+            '</div>' +
+            '<span class="px-2.5 py-1 rounded-lg bg-blue-600 text-white text-[11px] font-extrabold shrink-0">' +
+              eco.alerts_within_2km + ' alertas ≤ 2 km' +
+            '</span>' +
+          '</div>'
+        );
+      }).join('');
+    }
+
+    document.getElementById('ranking-criteria').addEventListener('change', function (e) {
+      renderRankings(e.target.value);
+    });
+
+    fetch(API_BASE + '/api/v1/analytics/summary')
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(renderSummary)
+      .catch(function () {
+        var st = document.getElementById('analytics-status');
+        if (st) {
+          st.textContent = 'Não foi possível conectar à API em tempo real. Conecte-se à internet ou inicie o servidor local para atualizar os indicadores.';
+          st.classList.remove('hidden');
+        }
+      });
+  })();
+  </script>
+</body>
+</html>

@@ -21,14 +21,6 @@ window.CUIDACAO_FARMACIAS_MOCK = Object.freeze([
     temFarmaciaPopular: true
   },
   {
-    id: 'farm-guaruja-02',
-    nome: 'Drogaria & Farmácia Praia de Pernambuco',
-    endereco: 'Av. Marjory da Silva Prado, 1100 – Balneário Praia do Pernambuco, Guarujá/SP',
-    latitude: -23.96857,
-    longitude: -46.18805,
-    temFarmaciaPopular: true
-  },
-  {
     id: 'farm-guaruja-03',
     nome: 'Droga Raia – Enseada (Jardim Belmar)',
     endereco: 'Av. Dom Pedro I, 2810 – Enseada, Guarujá/SP',

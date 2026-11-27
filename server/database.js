@@ -11,6 +11,8 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { JsonRepository } = require('./repositories/json-repository');
+const { PostgresRepository } = require('./repositories/postgres-repository');
 
 // DATA_DIR permite apontar para um disco persistente em hospedagens (Render, Railway, Fly...)
 const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : __dirname;
@@ -163,10 +165,22 @@ function buildSeedData() {
         name: 'Maria Cidadã Silva (Demonstração)',
         email: 'cidadao@onehealth.org',
         passwordHash: hashPassword('123456'),
+        role: 'citizen',
         provider: 'local',
         googleId: null,
         picture: null,
         createdAt: '2026-03-01T10:00:00.000Z'
+      },
+      {
+        id: 'usr-agent-1',
+        name: 'Agente Vigilância Saúde Guarujá',
+        email: 'agente@onehealth.org',
+        passwordHash: hashPassword('agente123456'),
+        role: 'agent',
+        provider: 'local',
+        googleId: null,
+        picture: null,
+        createdAt: '2026-03-01T10:05:00.000Z'
       }
     ],
     categories: [
@@ -174,7 +188,8 @@ function buildSeedData() {
       { id: 'cat-2', slug: 'upa', name: 'Hospital / UPA 24h', domain: 'health', color: '#EF4444', icon: 'hospital' },
       { id: 'cat-3', slug: 'farmacia', name: 'Farmácia Popular', domain: 'health', color: '#8B5CF6', icon: 'pill' },
       { id: 'cat-4', slug: 'ecoponto', name: 'Ecoponto - Descarte Consciente', domain: 'environment', color: '#2563EB', icon: 'recycle' },
-      { id: 'cat-5', slug: 'parque', name: 'Parque & Área Verde (Mata Atlântica)', domain: 'environment', color: '#059669', icon: 'tree' }
+      { id: 'cat-5', slug: 'parque', name: 'Parque & Área Verde (Mata Atlântica)', domain: 'environment', color: '#059669', icon: 'tree' },
+      { id: 'cat-6', slug: 'zoonoses', name: 'Saúde Animal & Controle de Zoonoses', domain: 'animal', color: '#0D9488', icon: 'paw' }
     ],
     locations: [
       // ======================================================================
@@ -250,13 +265,14 @@ function buildSeedData() {
         domain: 'health',
         color: '#8B5CF6',
         iconType: 'pill',
+        has_popular_pharmacy: true,
         name: 'Farmácia Popular & Drogaria do Perequê',
         address: 'Estrada Guarujá-Bertioga, 410 - Centro do Perequê, Guarujá - SP',
         city: 'Guarujá',
         state: 'SP',
         lat: -23.93650,
         lng: -46.18190,
-        services: ['Medicamentos de Uso Contínuo (Hipertensão e Diabetes)', 'Coleta de Medicamentos Vencidos', 'Aferição de Pressão Arterial e Glicemia'],
+        services: ['Programa Farmácia Popular', 'Medicamentos de Uso Contínuo (Hipertensão e Diabetes)', 'Coleta de Medicamentos Vencidos', 'Aferição de Pressão Arterial e Glicemia'],
         opening_hours: {
           '0': { open: '08:00', close: '21:00' },
           '1': { open: '07:30', close: '22:00' },
@@ -405,6 +421,7 @@ function buildSeedData() {
         domain: 'health',
         color: '#8B5CF6',
         iconType: 'pill',
+        has_popular_pharmacy: true,
         name: 'Drogaria & Farmácia Popular Praia de Pernambuco',
         address: 'Av. Marjory da Silva Prado, 1100 - Praia de Pernambuco, Guarujá - SP',
         city: 'Guarujá',
@@ -773,6 +790,7 @@ function buildSeedData() {
         domain: 'health',
         color: '#8B5CF6',
         iconType: 'pill',
+        has_popular_pharmacy: true,
         name: 'Drogaria São Paulo (Farmácia Popular & Coleta Segura)',
         address: 'Av. Puglisi, 240 - Centro / Pitangueiras, Guarujá - SP',
         city: 'Guarujá',
@@ -1162,6 +1180,383 @@ function buildSeedData() {
         overall_score: 4.7,
         total_reviews: 21,
         reviews: []
+      },
+
+      // ======================================================================
+      // REDE UNIFICADA DE FARMÁCIAS E FARMÁCIA POPULAR DO GUARUJÁ/SP
+      // (Unificada com cat-3; sem sobreposição com loc-pernambuco-2)
+      // ======================================================================
+      {
+        id: 'farm-guaruja-01',
+        categoryId: 'cat-3',
+        categoryName: 'Farmácia Popular',
+        domain: 'health',
+        color: '#8B5CF6',
+        iconType: 'pill',
+        has_popular_pharmacy: true,
+        name: 'Drogaria Perequê (Farma Unique)',
+        address: 'Av. Rio Amazonas, 882 - Balneário Praia do Perequê, Guarujá - SP',
+        city: 'Guarujá',
+        state: 'SP',
+        lat: -23.93380,
+        lng: -46.18230,
+        services: ['Programa Farmácia Popular', 'Medicamentos de Uso Contínuo', 'Aferição de Pressão e Glicemia'],
+        opening_hours: { '0': { open: '08:00', close: '21:00' }, '1': { open: '08:00', close: '22:00' }, '2': { open: '08:00', close: '22:00' }, '3': { open: '08:00', close: '22:00' }, '4': { open: '08:00', close: '22:00' }, '5': { open: '08:00', close: '22:00' }, '6': { open: '08:00', close: '22:00' } },
+        avg_wait_time: 4.7,
+        avg_accessibility: 4.6,
+        avg_humanized_care: 4.8,
+        overall_score: 4.7,
+        total_reviews: 14,
+        reviews: []
+      },
+      {
+        id: 'farm-guaruja-03',
+        categoryId: 'cat-3',
+        categoryName: 'Farmácia Popular',
+        domain: 'health',
+        color: '#8B5CF6',
+        iconType: 'pill',
+        has_popular_pharmacy: true,
+        name: 'Droga Raia – Enseada (Jardim Belmar)',
+        address: 'Av. Dom Pedro I, 2810 - Enseada, Guarujá - SP',
+        city: 'Guarujá',
+        state: 'SP',
+        lat: -23.97863,
+        lng: -46.22424,
+        services: ['Programa Farmácia Popular', 'Descarte Consciente de Medicamentos', 'Atendimento Farmacêutico'],
+        opening_hours: { '0': { open: '07:00', close: '23:00' }, '1': { open: '07:00', close: '23:00' }, '2': { open: '07:00', close: '23:00' }, '3': { open: '07:00', close: '23:00' }, '4': { open: '07:00', close: '23:00' }, '5': { open: '07:00', close: '23:00' }, '6': { open: '07:00', close: '23:00' } },
+        avg_wait_time: 4.8,
+        avg_accessibility: 4.9,
+        avg_humanized_care: 4.8,
+        overall_score: 4.8,
+        total_reviews: 22,
+        reviews: []
+      },
+      {
+        id: 'farm-guaruja-04',
+        categoryId: 'cat-3',
+        categoryName: 'Farmácia Popular',
+        domain: 'health',
+        color: '#8B5CF6',
+        iconType: 'pill',
+        has_popular_pharmacy: true,
+        name: 'Drogaria São Paulo – Enseada',
+        address: 'Av. Dom Pedro I, 1574 - Enseada, Guarujá - SP',
+        city: 'Guarujá',
+        state: 'SP',
+        lat: -23.98340,
+        lng: -46.23560,
+        services: ['Programa Farmácia Popular', 'Coleta de Medicamentos Vencidos', 'Aferição de Pressão'],
+        opening_hours: { '0': { open: '07:00', close: '23:00' }, '1': { open: '07:00', close: '23:00' }, '2': { open: '07:00', close: '23:00' }, '3': { open: '07:00', close: '23:00' }, '4': { open: '07:00', close: '23:00' }, '5': { open: '07:00', close: '23:00' }, '6': { open: '07:00', close: '23:00' } },
+        avg_wait_time: 4.7,
+        avg_accessibility: 4.8,
+        avg_humanized_care: 4.7,
+        overall_score: 4.7,
+        total_reviews: 18,
+        reviews: []
+      },
+      {
+        id: 'farm-guaruja-05',
+        categoryId: 'cat-3',
+        categoryName: 'Farmácia & Drogaria',
+        domain: 'health',
+        color: '#8B5CF6',
+        iconType: 'pill',
+        has_popular_pharmacy: false,
+        name: 'Farmácias Nissei – Enseada',
+        address: 'Av. Dom Pedro I, 1461 - Enseada, Guarujá - SP',
+        city: 'Guarujá',
+        state: 'SP',
+        lat: -23.98315,
+        lng: -46.23668,
+        services: ['Medicamentos e Perfumaria', 'Primeiros Socorros', 'Atendimento Farmacêutico'],
+        opening_hours: { '0': { open: '08:00', close: '22:00' }, '1': { open: '07:00', close: '23:00' }, '2': { open: '07:00', close: '23:00' }, '3': { open: '07:00', close: '23:00' }, '4': { open: '07:00', close: '23:00' }, '5': { open: '07:00', close: '23:00' }, '6': { open: '07:00', close: '23:00' } },
+        avg_wait_time: 4.6,
+        avg_accessibility: 4.8,
+        avg_humanized_care: 4.7,
+        overall_score: 4.7,
+        total_reviews: 12,
+        reviews: []
+      },
+      {
+        id: 'farm-guaruja-06',
+        categoryId: 'cat-3',
+        categoryName: 'Farmácia Popular',
+        domain: 'health',
+        color: '#8B5CF6',
+        iconType: 'pill',
+        has_popular_pharmacy: true,
+        name: 'Golden Farma – Morrinhos',
+        address: 'Av. Antenor Pimentel, 219 - Morrinhos, Guarujá - SP',
+        city: 'Guarujá',
+        state: 'SP',
+        lat: -23.96501,
+        lng: -46.25116,
+        services: ['Programa Farmácia Popular', 'Medicamentos Genéricos', 'Aferição de Pressão Arterial'],
+        opening_hours: { '0': { open: '08:00', close: '20:00' }, '1': { open: '08:00', close: '22:00' }, '2': { open: '08:00', close: '22:00' }, '3': { open: '08:00', close: '22:00' }, '4': { open: '08:00', close: '22:00' }, '5': { open: '08:00', close: '22:00' }, '6': { open: '08:00', close: '21:00' } },
+        avg_wait_time: 4.7,
+        avg_accessibility: 4.6,
+        avg_humanized_care: 4.8,
+        overall_score: 4.7,
+        total_reviews: 16,
+        reviews: []
+      },
+      {
+        id: 'farm-guaruja-07',
+        categoryId: 'cat-3',
+        categoryName: 'Farmácia Popular',
+        domain: 'health',
+        color: '#8B5CF6',
+        iconType: 'pill',
+        has_popular_pharmacy: true,
+        name: 'Raia Drogasil – Vila Maia',
+        address: 'Av. Deputado Emílio Carlos, 333 - Vila Maia, Guarujá - SP',
+        city: 'Guarujá',
+        state: 'SP',
+        lat: -23.98940,
+        lng: -46.25230,
+        services: ['Programa Farmácia Popular', 'Descarte Consciente de Medicamentos', 'Testes Rápidos e Glicemia'],
+        opening_hours: { '0': { open: '07:00', close: '23:00' }, '1': { open: '07:00', close: '23:00' }, '2': { open: '07:00', close: '23:00' }, '3': { open: '07:00', close: '23:00' }, '4': { open: '07:00', close: '23:00' }, '5': { open: '07:00', close: '23:00' }, '6': { open: '07:00', close: '23:00' } },
+        avg_wait_time: 4.8,
+        avg_accessibility: 4.9,
+        avg_humanized_care: 4.8,
+        overall_score: 4.8,
+        total_reviews: 20,
+        reviews: []
+      },
+      {
+        id: 'farm-guaruja-08',
+        categoryId: 'cat-3',
+        categoryName: 'Farmácia Popular',
+        domain: 'health',
+        color: '#8B5CF6',
+        iconType: 'pill',
+        has_popular_pharmacy: true,
+        name: 'Farmácias Pague Menos – Centro / Pitangueiras',
+        address: 'Av. Puglisi, 310 - Centro / Pitangueiras, Guarujá - SP',
+        city: 'Guarujá',
+        state: 'SP',
+        lat: -23.99251,
+        lng: -46.25845,
+        services: ['Programa Farmácia Popular', 'Consultório Farmacêutico', 'Descarte Ecológico de Blisters'],
+        opening_hours: { '0': { open: '07:00', close: '22:00' }, '1': { open: '07:00', close: '23:00' }, '2': { open: '07:00', close: '23:00' }, '3': { open: '07:00', close: '23:00' }, '4': { open: '07:00', close: '23:00' }, '5': { open: '07:00', close: '23:00' }, '6': { open: '07:00', close: '23:00' } },
+        avg_wait_time: 4.7,
+        avg_accessibility: 4.8,
+        avg_humanized_care: 4.8,
+        overall_score: 4.8,
+        total_reviews: 19,
+        reviews: []
+      },
+      {
+        id: 'farm-guaruja-09',
+        categoryId: 'cat-3',
+        categoryName: 'Farmácia Popular',
+        domain: 'health',
+        color: '#8B5CF6',
+        iconType: 'pill',
+        has_popular_pharmacy: true,
+        name: 'Droga Raia – Centro / Pitangueiras',
+        address: 'Rua Mário Ribeiro, 835 - Centro / Pitangueiras, Guarujá - SP',
+        city: 'Guarujá',
+        state: 'SP',
+        lat: -23.99758,
+        lng: -46.25971,
+        services: ['Programa Farmácia Popular', 'Coleta de Medicamentos Vencidos', 'Atendimento 24h'],
+        opening_hours: { '0': { open: '00:00', close: '23:59' }, '1': { open: '00:00', close: '23:59' }, '2': { open: '00:00', close: '23:59' }, '3': { open: '00:00', close: '23:59' }, '4': { open: '00:00', close: '23:59' }, '5': { open: '00:00', close: '23:59' }, '6': { open: '00:00', close: '23:59' } },
+        avg_wait_time: 4.9,
+        avg_accessibility: 4.9,
+        avg_humanized_care: 4.8,
+        overall_score: 4.9,
+        total_reviews: 26,
+        reviews: []
+      },
+      {
+        id: 'farm-guaruja-10',
+        categoryId: 'cat-3',
+        categoryName: 'Farmácia Popular',
+        domain: 'health',
+        color: '#8B5CF6',
+        iconType: 'pill',
+        has_popular_pharmacy: true,
+        name: 'Drogaria São Paulo – Astúrias / Vila Alzira',
+        address: 'Av. General Rondon, 150 - Vila Alzira / Astúrias, Guarujá - SP',
+        city: 'Guarujá',
+        state: 'SP',
+        lat: -24.00430,
+        lng: -46.26830,
+        services: ['Programa Farmácia Popular', 'Descarte Consciente de Remédios', 'Aferição de Pressão'],
+        opening_hours: { '0': { open: '07:00', close: '22:00' }, '1': { open: '07:00', close: '23:00' }, '2': { open: '07:00', close: '23:00' }, '3': { open: '07:00', close: '23:00' }, '4': { open: '07:00', close: '23:00' }, '5': { open: '07:00', close: '23:00' }, '6': { open: '07:00', close: '23:00' } },
+        avg_wait_time: 4.8,
+        avg_accessibility: 4.8,
+        avg_humanized_care: 4.8,
+        overall_score: 4.8,
+        total_reviews: 17,
+        reviews: []
+      },
+      {
+        id: 'farm-guaruja-11',
+        categoryId: 'cat-3',
+        categoryName: 'Farmácia Popular',
+        domain: 'health',
+        color: '#8B5CF6',
+        iconType: 'pill',
+        has_popular_pharmacy: true,
+        name: 'Drogaria São Paulo – Vila Santa Rosa',
+        address: 'Av. Dr. Adhemar de Barros, 2105 - Vila Santa Rosa, Guarujá - SP',
+        city: 'Guarujá',
+        state: 'SP',
+        lat: -23.99215,
+        lng: -46.27310,
+        services: ['Programa Farmácia Popular', 'Coleta de Medicamentos Vencidos', 'Atendimento Farmacêutico'],
+        opening_hours: { '0': { open: '07:00', close: '22:00' }, '1': { open: '07:00', close: '23:00' }, '2': { open: '07:00', close: '23:00' }, '3': { open: '07:00', close: '23:00' }, '4': { open: '07:00', close: '23:00' }, '5': { open: '07:00', close: '23:00' }, '6': { open: '07:00', close: '23:00' } },
+        avg_wait_time: 4.7,
+        avg_accessibility: 4.8,
+        avg_humanized_care: 4.7,
+        overall_score: 4.7,
+        total_reviews: 15,
+        reviews: []
+      },
+      {
+        id: 'farm-guaruja-12',
+        categoryId: 'cat-3',
+        categoryName: 'Farmácia Popular',
+        domain: 'health',
+        color: '#8B5CF6',
+        iconType: 'pill',
+        has_popular_pharmacy: true,
+        name: 'Droga Raia – Vicente de Carvalho (Vila Alice)',
+        address: 'Av. Thiago Ferreira, 787 - Vila Alice, Vicente de Carvalho, Guarujá - SP',
+        city: 'Guarujá',
+        state: 'SP',
+        lat: -23.94265,
+        lng: -46.30143,
+        services: ['Programa Farmácia Popular', 'Descarte Consciente de Remédios', 'Aferição de Glicemia'],
+        opening_hours: { '0': { open: '07:00', close: '22:00' }, '1': { open: '07:00', close: '23:00' }, '2': { open: '07:00', close: '23:00' }, '3': { open: '07:00', close: '23:00' }, '4': { open: '07:00', close: '23:00' }, '5': { open: '07:00', close: '23:00' }, '6': { open: '07:00', close: '23:00' } },
+        avg_wait_time: 4.8,
+        avg_accessibility: 4.8,
+        avg_humanized_care: 4.7,
+        overall_score: 4.8,
+        total_reviews: 21,
+        reviews: []
+      },
+      {
+        id: 'farm-guaruja-13',
+        categoryId: 'cat-3',
+        categoryName: 'Farmácia Popular',
+        domain: 'health',
+        color: '#8B5CF6',
+        iconType: 'pill',
+        has_popular_pharmacy: true,
+        name: 'Farma Conde – Vicente de Carvalho (Vila Alice)',
+        address: 'Av. Thiago Ferreira, 904 - Vila Alice, Vicente de Carvalho, Guarujá - SP',
+        city: 'Guarujá',
+        state: 'SP',
+        lat: -23.94390,
+        lng: -46.30040,
+        services: ['Programa Farmácia Popular', 'Medicamentos de Uso Contínuo', 'Aferição de Pressão Arterial'],
+        opening_hours: { '0': { open: '07:00', close: '22:00' }, '1': { open: '07:00', close: '23:00' }, '2': { open: '07:00', close: '23:00' }, '3': { open: '07:00', close: '23:00' }, '4': { open: '07:00', close: '23:00' }, '5': { open: '07:00', close: '23:00' }, '6': { open: '07:00', close: '23:00' } },
+        avg_wait_time: 4.7,
+        avg_accessibility: 4.7,
+        avg_humanized_care: 4.8,
+        overall_score: 4.7,
+        total_reviews: 16,
+        reviews: []
+      },
+
+      // ======================================================================
+      // 3º PILAR DO ONE HEALTH: SAÚDE ANIMAL, VACINAÇÃO ANTIRRÁBICA E ZOONOSES
+      // ======================================================================
+      {
+        id: 'loc-zoonoses-1',
+        categoryId: 'cat-6',
+        categoryName: 'Saúde Animal & Controle de Zoonoses',
+        domain: 'animal',
+        color: '#0D9488',
+        iconType: 'paw',
+        name: 'Centro de Controle de Zoonoses (CCZ) & Bem-Estar Animal do Guarujá',
+        address: 'Av. Adriano Dias dos Santos, 600 - Jardim Boa Esperança / Vicente de Carvalho, Guarujá - SP',
+        city: 'Guarujá',
+        state: 'SP',
+        lat: -23.95710,
+        lng: -46.28420,
+        services: ['Vacinação Antirrábica Gratuita (Cães e Gatos)', 'Vigilância e Controle de Zoonoses (Raiva, Leishmaniose e Esporotricose)', 'Castração Pública e Microchipagem', 'Controle de Vetores e Arboviroses'],
+        opening_hours: { '1': { open: '08:00', close: '17:00' }, '2': { open: '08:00', close: '17:00' }, '3': { open: '08:00', close: '17:00' }, '4': { open: '08:00', close: '17:00' }, '5': { open: '08:00', close: '17:00' } },
+        avg_wait_time: 4.5,
+        avg_accessibility: 4.7,
+        avg_humanized_care: 4.9,
+        overall_score: 4.7,
+        total_reviews: 32,
+        reviews: [
+          { id: 'rev-zoo-1', userName: 'Carla Protetora Animal', wait: 5, access: 5, care: 5, comment: 'Vacinação antirrábica super bem organizada e veterinários muito carinhosos com os animais resgatados.', date: '2026-03-14' }
+        ]
+      },
+      {
+        id: 'loc-zoonoses-2',
+        categoryId: 'cat-6',
+        categoryName: 'Saúde Animal & Controle de Zoonoses',
+        domain: 'animal',
+        color: '#0D9488',
+        iconType: 'paw',
+        name: 'Posto Avançado de Saúde Animal & Zoonoses Perequê / Serra do Guararu',
+        address: 'Estrada Guarujá-Bertioga, km 7,5 - Perequê, Guarujá - SP',
+        city: 'Guarujá',
+        state: 'SP',
+        lat: -23.93510,
+        lng: -46.18560,
+        services: ['Campanha Permanente de Vacinação Antirrábica', 'Monitoramento de Fauna Silvestre da Mata Atlântica', 'Prevenção de Zoonoses Costeiras', 'Orientação de Guarda Responsável'],
+        opening_hours: { '1': { open: '08:00', close: '16:30' }, '2': { open: '08:00', close: '16:30' }, '3': { open: '08:00', close: '16:30' }, '4': { open: '08:00', close: '16:30' }, '5': { open: '08:00', close: '16:30' } },
+        avg_wait_time: 4.7,
+        avg_accessibility: 4.6,
+        avg_humanized_care: 4.9,
+        overall_score: 4.7,
+        total_reviews: 19,
+        reviews: [
+          { id: 'rev-zoo-2', userName: 'Morador Vila de Pescadores', wait: 5, access: 4, care: 5, comment: 'Essencial aqui no Perequê perto da mata para vacinar os cães e orientar sobre animais silvestres.', date: '2026-03-15' }
+        ]
+      },
+      {
+        id: 'loc-zoonoses-3',
+        categoryId: 'cat-6',
+        categoryName: 'Saúde Animal & Controle de Zoonoses',
+        domain: 'animal',
+        color: '#0D9488',
+        iconType: 'paw',
+        name: 'Base de Reabilitação de Fauna Marinha e Silvestre (Mata Atlântica / Guarujá)',
+        address: 'Estrada de Pernambuco, 450 - Enseada Leste / Pernambuco, Guarujá - SP',
+        city: 'Guarujá',
+        state: 'SP',
+        lat: -23.97920,
+        lng: -46.20880,
+        services: ['Resgate de Fauna Marinha e Aves Costeiras Feridas', 'Atendimento Veterinário de Animais Silvestres', 'Monitoramento Sanitário de Praias (One Health)', 'Plantão 24h de Resgate Ambiental'],
+        opening_hours: { '0': { open: '00:00', close: '23:59' }, '1': { open: '00:00', close: '23:59' }, '2': { open: '00:00', close: '23:59' }, '3': { open: '00:00', close: '23:59' }, '4': { open: '00:00', close: '23:59' }, '5': { open: '00:00', close: '23:59' }, '6': { open: '00:00', close: '23:59' } },
+        avg_wait_time: 4.9,
+        avg_accessibility: 4.8,
+        avg_humanized_care: 5.0,
+        overall_score: 4.9,
+        total_reviews: 28,
+        reviews: []
+      },
+      {
+        id: 'loc-zoonoses-4',
+        categoryId: 'cat-6',
+        categoryName: 'Saúde Animal & Controle de Zoonoses',
+        domain: 'animal',
+        color: '#0D9488',
+        iconType: 'paw',
+        name: 'Unidade Municipal de Atendimento Veterinário Público & Castramóvel Enseada',
+        address: 'Av. Dom Pedro I, 2480 - Enseada / Vila Júlia, Guarujá - SP',
+        city: 'Guarujá',
+        state: 'SP',
+        lat: -23.98140,
+        lng: -46.22740,
+        services: ['Atendimento Clínico Veterinário Social', 'Vacinação Antirrábica Gratuita', 'Triagem de Esporotricose e Leishmaniose', 'Educação em Saúde Única'],
+        opening_hours: { '1': { open: '08:00', close: '17:00' }, '2': { open: '08:00', close: '17:00' }, '3': { open: '08:00', close: '17:00' }, '4': { open: '08:00', close: '17:00' }, '5': { open: '08:00', close: '17:00' }, '6': { open: '08:00', close: '12:00' } },
+        avg_wait_time: 4.4,
+        avg_accessibility: 4.8,
+        avg_humanized_care: 4.8,
+        overall_score: 4.7,
+        total_reviews: 24,
+        reviews: []
       }
     ],
     reports: [
@@ -1173,9 +1568,40 @@ function buildSeedData() {
         address: 'Estrada Guarujá-Bertioga, próx. ao km 7 - Perequê, Guarujá - SP',
         lat: -23.93710,
         lng: -46.18360,
+        urgency: 4,
+        image_url: null,
         status: 'pending',
+        confirmations: 3,
+        confirmedBy: ['seed-u1', 'seed-u2', 'seed-u3'],
         date: '2026-03-16',
-        reporterName: 'Vigilância Comunitária Perequê'
+        createdAt: 1773669600000,
+        reporterName: 'Vigilância Comunitária Perequê',
+        comments: [
+          {
+            id: 'comm-seed-1',
+            author: 'Morador do Perequê',
+            text: 'Equipe de agentes comunitários já orientou os moradores da rua sobre vedação de caixas d\'água.',
+            createdAt: 1773673200000
+          }
+        ]
+      },
+      {
+        id: 'rep-guararu-1',
+        title: 'Ave Marinha Debilitada Próxima à Foz do Rio do Peixe',
+        report_type: 'animal_ferido_silvestre',
+        description: 'Ave costeira encontrada com sinais de exaustão na faixa de areia norte da Praia do Perequê / acesso à Serra do Guararu. Acionada equipe de reabilitação.',
+        address: 'Praia do Perequê (Canto Norte / Rio do Peixe) - Perequê, Guarujá - SP',
+        lat: -23.93490,
+        lng: -46.18090,
+        urgency: 5,
+        image_url: null,
+        status: 'in_analysis',
+        confirmations: 2,
+        confirmedBy: ['seed-u1', 'seed-u4'],
+        date: '2026-03-16',
+        createdAt: 1773671400000,
+        reporterName: 'Pescadores Artesanais do Perequê',
+        comments: []
       },
       {
         id: 'rep-guaruja-1',
@@ -1185,9 +1611,15 @@ function buildSeedData() {
         address: 'Rua Quintino Bocaiúva, 180 - Centro / Pitangueiras, Guarujá - SP',
         lat: -23.99350,
         lng: -46.25880,
+        urgency: 5,
+        image_url: null,
         status: 'pending',
+        confirmations: 4,
+        confirmedBy: ['seed-u1', 'seed-u2', 'seed-u3', 'seed-u5'],
         date: '2026-03-15',
-        reporterName: 'Vigilância Comunitária Pitangueiras'
+        createdAt: 1773583200000,
+        reporterName: 'Vigilância Comunitária Pitangueiras',
+        comments: []
       },
       {
         id: 'rep-guaruja-2',
@@ -1197,59 +1629,18 @@ function buildSeedData() {
         address: 'Av. Santos Dumont, próx. ao nº 1100 - Santo Antônio, Guarujá - SP',
         lat: -23.98400,
         lng: -46.26800,
-        status: 'pending',
+        urgency: 4,
+        image_url: null,
+        status: 'resolved',
+        confirmations: 2,
+        confirmedBy: ['seed-u2', 'seed-u3'],
         date: '2026-03-16',
-        reporterName: 'Coletivo Ambiental Guarujá'
+        createdAt: 1773666000000,
+        reporterName: 'Coletivo Ambiental Guarujá',
+        comments: []
       }
     ]
   };
-}
-
-// ============================================================================
-// PERSISTÊNCIA AUTOMÁTICA EM ARQUIVO JSON (FS NATIVO) COM MERGE DE NOVOS BAIRROS
-// ============================================================================
-function loadDatabase() {
-  const seed = getInitialSeedData();
-
-  try {
-    if (fs.existsSync(DATA_FILE_PATH)) {
-      const raw = fs.readFileSync(DATA_FILE_PATH, 'utf8');
-      const parsed = JSON.parse(raw);
-      if (parsed && Array.isArray(parsed.users) && Array.isArray(parsed.locations) && Array.isArray(parsed.reports)) {
-        // Garante que todos os novos pontos do Perequê e do Guarujá inteiro sejam mesclados caso data.json seja de versão anterior
-        let updated = false;
-        for (const seedLoc of seed.locations) {
-          if (!parsed.locations.some(l => l.id === seedLoc.id)) {
-            parsed.locations.push(seedLoc);
-            updated = true;
-          }
-        }
-        for (const seedRep of seed.reports) {
-          if (!parsed.reports.some(r => r.id === seedRep.id)) {
-            parsed.reports.unshift(seedRep);
-            updated = true;
-          }
-        }
-        if (updated) {
-          try {
-            fs.writeFileSync(DATA_FILE_PATH, JSON.stringify(parsed, null, 2), 'utf8');
-          } catch {
-            // Ignora erro de escrita
-          }
-        }
-        return parsed;
-      }
-    }
-  } catch (err) {
-    console.warn('⚠️ Aviso ao carregar data.json, inicializando com seed padrão:', err.message);
-  }
-
-  try {
-    fs.writeFileSync(DATA_FILE_PATH, JSON.stringify(seed, null, 2), 'utf8');
-  } catch (err) {
-    console.warn('⚠️ Não foi possível gravar data.json inicial:', err.message);
-  }
-  return seed;
 }
 
 // ============================================================================
@@ -1260,52 +1651,87 @@ function loadDatabase() {
 function recomputeLocationMetrics(loc) {
   const reviews = Array.isArray(loc.reviews) ? loc.reviews : [];
   const n = reviews.length;
-  const avg = (key) => n ? Math.round((reviews.reduce((a, r) => a + (Number(r[key]) || 0), 0) / n) * 10) / 10 : 0;
+  if (!n) {
+    loc.total_reviews = 0;
+    loc.avg_wait_time = 0;
+    loc.avg_accessibility = 0;
+    loc.avg_humanized_care = 0;
+    loc.overall_score = 0;
+    return loc;
+  }
+  const sumWait = reviews.reduce((a, r) => a + (Number(r.wait) || 0), 0);
+  const sumAccess = reviews.reduce((a, r) => a + (Number(r.access) || 0), 0);
+  const sumCare = reviews.reduce((a, r) => a + (Number(r.care) || 0), 0);
   loc.total_reviews = n;
-  loc.avg_wait_time = avg('wait');
-  loc.avg_accessibility = avg('access');
-  loc.avg_humanized_care = avg('care');
-  loc.overall_score = n ? Math.round(((loc.avg_wait_time + loc.avg_accessibility + loc.avg_humanized_care) / 3) * 10) / 10 : 0;
+  loc.avg_wait_time = Math.round((sumWait / n) * 10) / 10;
+  loc.avg_accessibility = Math.round((sumAccess / n) * 10) / 10;
+  loc.avg_humanized_care = Math.round((sumCare / n) * 10) / 10;
+  loc.overall_score = Math.round(((sumWait + sumAccess + sumCare) / (3 * n)) * 10) / 10;
   return loc;
 }
 
-const db = loadDatabase();
-if (process.env.KEEP_DEMO_RATINGS !== '1') {
-  db.locations.forEach(l => { if (!Array.isArray(l.reviews)) l.reviews = []; recomputeLocationMetrics(l); });
-}
+// ============================================================================
+// SELEÇÃO DO REPOSITÓRIO DE PERSISTÊNCIA:
+// - DB_DRIVER=json (padrão local simples, zero dependências externas, backups .gz)
+// - DB_DRIVER=postgres (ou DATABASE_URL definido): adapter PostgreSQL + PostGIS
+//   com fallback automático para JsonRepository caso o driver 'pg' não esteja instalado
+// ============================================================================
+function createActiveRepository() {
+  const requestedDriver = (process.env.DB_DRIVER || (process.env.DATABASE_URL ? 'postgres' : 'json')).toLowerCase();
 
-// ============================================================================
-// GRAVAÇÃO ATÔMICA E AGRUPADA (debounce) — evita corromper data.json em queda
-// de energia e evita regravar o arquivo inteiro a cada requisição
-// ============================================================================
-let saveTimer = null;
-function writeDatabaseNow() {
-  const tmp = DATA_FILE_PATH + '.tmp';
-  try {
-    fs.writeFileSync(tmp, JSON.stringify(db, null, 2), 'utf8');
-    fs.renameSync(tmp, DATA_FILE_PATH);
-    return true;
-  } catch (err) {
-    console.error('❌ Erro ao persistir data.json:', err.message);
-    return false;
+  if (requestedDriver === 'postgres' && process.env.DATABASE_URL) {
+    try {
+      const pgRepo = new PostgresRepository({
+        databaseUrl: process.env.DATABASE_URL,
+        seedFactory: getInitialSeedData
+      });
+      // Valida disponibilidade do módulo 'pg' e dispara hidratação assíncrona
+      pgRepo._ensurePool();
+      pgRepo.init().catch(err => {
+        console.error('⚠️ Falha ao inicializar PostgresRepository (verifique DATABASE_URL/PostGIS):', err.message);
+      });
+      return pgRepo;
+    } catch (err) {
+      if (process.env.DB_STRICT === '1') throw err;
+      console.warn(`⚠️ ${err.message} Fazendo fallback automático para persistência local JsonRepository (data.json).`);
+    }
   }
+
+  return new JsonRepository({
+    dataDir: DATA_DIR,
+    seedFactory: getInitialSeedData,
+    seedDemoData: SEED_DEMO_DATA,
+    keepDemoRatings: process.env.KEEP_DEMO_RATINGS === '1',
+    recomputeLocationMetrics
+  });
 }
 
-function saveDatabase() {
-  if (saveTimer) return true;
-  saveTimer = setTimeout(() => { saveTimer = null; writeDatabaseNow(); }, 250);
-  return true;
+const repository = createActiveRepository();
+const db = repository.db;
+
+function saveDatabase(entityKind, entityPayload) {
+  if (entityKind && typeof repository.syncEntity === 'function') {
+    repository.syncEntity(entityKind, entityPayload).catch(err => {
+      console.error(`⚠️ Erro ao sincronizar ${entityKind} no repositório:`, err.message);
+    });
+  }
+  return repository.save();
 }
 
 function flushDatabase() {
-  if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
-  return writeDatabaseNow();
+  return repository.flush();
+}
+
+function createCompressedBackup(opts) {
+  return repository.createCompressedBackup(opts);
 }
 
 module.exports = {
   db,
+  repository,
   saveDatabase,
   flushDatabase,
+  createCompressedBackup,
   recomputeLocationMetrics,
   PEREQUE_CENTER,
   GUARUJA_CENTER,
@@ -1313,5 +1739,7 @@ module.exports = {
   findNearestLocalPlace,
   calculateDistanceMeters,
   hashPassword,
-  verifyPassword
+  verifyPassword,
+  JsonRepository,
+  PostgresRepository
 };

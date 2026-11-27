@@ -1,0 +1,99 @@
+name: CuidAção One Health — CI/CD & Android APK
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate-and-test:
+    name: Sintaxe, Build PWA, Doctor & Testes Nativos
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [18.x, 20.x]
+
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Checagem explícita de sintaxe (node --check)
+        run: |
+          node --check server.js
+          node --check server/server.js
+          node --check server/database.js
+          node --check server/repositories/json-repository.js
+          node --check server/repositories/postgres-repository.js
+          node --check public/js/app.js
+          node --check public/js/community/feed.js
+          node --check public/sw.js
+          node --check scripts/build.js
+          node --check scripts/doctor.js
+          node --check scripts/sync-osm-guaruja.js
+
+      - name: Compilar CSS estático e validar SHELL_ASSETS do PWA
+        run: npm run build
+
+      - name: Executar diagnóstico completo (npm run doctor)
+        run: npm run doctor
+
+      - name: Executar suíte de testes unitários e de integração HTTP (npm test)
+        run: npm test
+
+  package-android-apk:
+    name: Empacotamento Android APK (Capacitor + Gradle)
+    needs: validate-and-test
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+
+      - name: Configurar Java JDK 17 (exigido pelo Android Gradle Plugin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Configurar Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Compilar assets offline do PWA em public/
+        run: npm run build
+
+      - name: Instalar Capacitor Android e gerar projeto nativo
+        run: |
+          npm install --no-save @capacitor/core @capacitor/cli @capacitor/android @capacitor/app
+          if [ ! -d android ]; then
+            npx cap add android
+          fi
+          npx cap sync android
+
+      - name: Compilar APK Debug via Gradle
+        working-directory: android
+        run: |
+          chmod +x ./gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Publicar APK como Artifact do Release
+        uses: actions/upload-artifact@v4
+        with:
+          name: cuidacao-onehealth-${{ github.ref_name }}-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error

@@ -6,7 +6,10 @@
   <meta name="theme-color" content="#f5f6f8" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#121418" media="(prefers-color-scheme: dark)">
   <meta name="color-scheme" content="light dark">
-  <title>Comunidade e Alertas</title>
+  <title>Comunidade e Alertas • CuidAção Guarujá/SP</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 
   <style>
     /* ==========================================================================
@@ -685,10 +688,46 @@
   </svg>
 
   <div class="app">
-    <header class="app-header">
-      <h1>Comunidade e alertas</h1>
-      <p>Compartilhe o que está acontecendo no bairro.</p>
+    <header class="app-header" style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;">
+      <div>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap;">
+          <a href="./" style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:999px;background:var(--accent-soft);color:var(--accent);font-weight:700;font-size:0.8125rem;text-decoration:none;">
+            ← Mapa Interativo CuidAção
+          </a>
+          <a href="painel.html" style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:999px;border:1px solid var(--border-strong);color:var(--text-2);font-weight:600;font-size:0.8125rem;text-decoration:none;">
+            📊 Painel Analítico
+          </a>
+        </div>
+        <h1>Comunidade e alertas • Guarujá/SP</h1>
+        <p>Compartilhe alertas de Saúde Única (dengue, descarte irregular, fauna e saúde pública) integrados ao mapa.</p>
+      </div>
+      <div id="comm-auth-bar" style="display:flex;align-items:center;gap:8px;font-size:0.8125rem;"></div>
     </header>
+
+    <!-- Modal simples e acessível de Login para quem acessa comunidade.html diretamente -->
+    <div id="comm-login-modal" role="dialog" aria-modal="true" aria-labelledby="comm-login-title" hidden style="position:fixed;inset:0;z-index:50;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;padding:16px;">
+      <div class="card" style="width:100%;max-width:380px;padding:20px;display:flex;flex-direction:column;gap:12px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <h2 id="comm-login-title" style="font-size:1rem;font-weight:700;">Entrar no CuidAção</h2>
+          <button type="button" id="comm-login-close" style="border:0;background:transparent;font-weight:700;padding:4px;">✕</button>
+        </div>
+        <form id="comm-login-form" style="display:flex;flex-direction:column;gap:10px;">
+          <div class="field">
+            <label for="comm-email" class="label">E-mail</label>
+            <input type="email" id="comm-email" required placeholder="seu@email.com" style="padding:9px 12px;border:1px solid var(--border-strong);border-radius:var(--radius-sm);background:var(--surface);">
+          </div>
+          <div class="field">
+            <label for="comm-pass" class="label">Senha</label>
+            <input type="password" id="comm-pass" required maxlength="128" placeholder="Sua senha" style="padding:9px 12px;border:1px solid var(--border-strong);border-radius:var(--radius-sm);background:var(--surface);">
+          </div>
+          <p id="comm-login-error" class="form-error" hidden></p>
+          <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:4px;">
+            <a href="./" class="btn" style="border-color:var(--border-strong);text-decoration:none;font-size:0.8125rem;">Criar conta no Mapa</a>
+            <button type="submit" class="btn btn-primary" style="font-size:0.875rem;">Entrar</button>
+          </div>
+        </form>
+      </div>
+    </div>
 
     <main class="app-main">
 
@@ -700,11 +739,11 @@
 
         <form id="post-form" class="composer-form" novalidate>
           <div class="composer-media">
-            <input type="file" id="post-image" class="file-input visually-hidden" accept="image/*" aria-describedby="post-image-hint">
+            <input type="file" id="post-image" class="file-input visually-hidden" accept="image/jpeg,image/png,image/webp" aria-describedby="post-image-hint">
             <label for="post-image" id="dropzone" class="dropzone">
               <svg class="icon" aria-hidden="true"><use href="#i-clip"/></svg>
-              <span class="dropzone-title">Anexar imagem</span>
-              <span class="dropzone-hint" id="post-image-hint">JPG, PNG ou WebP, até 10 MB</span>
+              <span class="dropzone-title">Anexar imagem (opcional)</span>
+              <span class="dropzone-hint" id="post-image-hint">JPG, PNG ou WebP — ou publique alerta rápido só com texto</span>
             </label>
 
             <figure id="preview" class="preview" hidden>
@@ -722,15 +761,44 @@
           </div>
 
           <div class="field field-details">
+            <label for="post-type" class="label">Categoria One Health</label>
+            <select id="post-type" style="padding:9px 12px;border:1px solid var(--border-strong);border-radius:var(--radius-sm);background:var(--surface);margin-bottom:6px;">
+              <option value="foco_dengue">Foco de Dengue / Água Parada</option>
+              <option value="descarte_irregular">Descarte Irregular de Resíduos</option>
+              <option value="terreno_baldio">Terreno Baldio / Vegetação Densa</option>
+              <option value="esgoto_ceu_aberto">Esgoto / Vazamento a Céu Aberto</option>
+              <option value="animal_ferido_silvestre">Animal Silvestre / Marinho Ferido</option>
+              <option value="risco_zoonose">Risco de Zoonose / Saúde Animal</option>
+            </select>
+
             <label for="post-details" class="label">Detalhes</label>
             <textarea id="post-details" class="textarea" rows="4" maxlength="1000"
               placeholder="Descreva o evento: o que aconteceu, onde e quando."
               aria-describedby="post-details-count"></textarea>
             <div class="field-foot"><span id="post-details-count">0 / 1000</span></div>
+
+            <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
+              <label style="display:inline-flex;align-items:center;gap:6px;font-size:0.8125rem;font-weight:600;cursor:pointer;">
+                <input type="checkbox" id="post-include-coords" checked>
+                <span>Georreferenciar no mapa:</span>
+              </label>
+              <select id="post-neighborhood" aria-label="Bairro do alerta no Guarujá" style="padding:6px 10px;border:1px solid var(--border-strong);border-radius:var(--radius-sm);background:var(--surface);font-size:0.8125rem;">
+                <option value="-23.93680,-46.18250,Bairro do Perequê, Guarujá - SP">Perequê</option>
+                <option value="-23.96820,-46.19120,Praia de Pernambuco, Guarujá - SP">Praia de Pernambuco</option>
+                <option value="-23.89650,-46.15800,Serra do Guararu, Guarujá - SP">Serra do Guararu</option>
+                <option value="-23.98650,-46.22910,Enseada, Guarujá - SP">Enseada</option>
+                <option value="-23.96850,-46.25100,Morrinhos, Guarujá - SP">Morrinhos</option>
+                <option value="-23.99103,-46.25892,Pitangueiras, Guarujá - SP">Pitangueiras</option>
+                <option value="-23.99946,-46.26439,Centro, Guarujá - SP">Centro</option>
+                <option value="-23.99060,-46.25325,Vila Maia, Guarujá - SP">Vila Maia</option>
+                <option value="-24.00180,-46.26470,Astúrias, Guarujá - SP">Astúrias / Tombo</option>
+                <option value="-23.94100,-46.28950,Vicente de Carvalho, Guarujá - SP">Vicente de Carvalho</option>
+              </select>
+            </div>
           </div>
 
           <fieldset class="field field-rating">
-            <legend class="label" id="rating-label">Avaliação do evento</legend>
+            <legend class="label" id="rating-label">Urgência / Relevância (1 a 5)</legend>
             <div class="rating-row">
               <div id="post-rating" class="rating" role="radiogroup" aria-labelledby="rating-label"></div>
               <span id="rating-caption" class="rating-caption" aria-hidden="true">Selecione de 1 a 5</span>
@@ -821,586 +889,217 @@
     </li>
   </template>
 
+  <script src="js/config.js"></script>
+  <script src="js/community/feed.js?v=7"></script>
   <script>
   (function () {
     'use strict';
 
-    // ========================================================================
-    // CONFIGURAÇÃO
-    // ========================================================================
-    var STORAGE_KEY = 'comunidade.alertas.v1';
-    var COMMENT_MAX = 225;
-    var DETAILS_MAX = 1000;
-    var IMAGE_MAX_BYTES = 10 * 1024 * 1024;   // arquivo original
-    var IMAGE_MAX_SIDE = 1280;                // a imagem salva é reduzida (cabe no armazenamento do aparelho)
-    var IMAGE_QUALITY = 0.82;
-    var RATING_LABELS = ['Selecione de 1 a 5', 'Ruim', 'Regular', 'Bom', 'Muito bom', 'Excelente'];
+    var API_BASE = (window.CUIDACAO_CONFIG && window.CUIDACAO_CONFIG.apiBase) ||
+      (window.location.protocol === 'file:' ? 'http://localhost:3000' : '');
 
-    var reducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-
-    // ========================================================================
-    // ELEMENTOS
-    // ========================================================================
-    function $(sel, root) { return (root || document).querySelector(sel); }
-
-    var els = {
-      form: $('#post-form'),
-      fileInput: $('#post-image'),
-      dropzone: $('#dropzone'),
-      preview: $('#preview'),
-      previewImg: $('#preview-img'),
-      previewChange: $('#preview-change'),
-      previewRemove: $('#preview-remove'),
-      details: $('#post-details'),
-      detailsCount: $('#post-details-count'),
-      rating: $('#post-rating'),
-      ratingCaption: $('#rating-caption'),
-      error: $('#post-error'),
-      submit: $('#post-submit'),
-      feed: $('#feed'),
-      feedEmpty: $('#feed-empty'),
-      feedCount: $('#feed-count'),
-      status: $('#status'),
-      tplPost: $('#tpl-post'),
-      tplComment: $('#tpl-comment')
-    };
-
-    var state = {
-      posts: loadPosts(),
-      rating: 0,
-      image: { token: 0, job: null }   // job = Promise com a imagem já otimizada
-    };
-
-    var stars = [];
-
-    // ========================================================================
-    // UTILITÁRIOS
-    // ========================================================================
-    function uid() {
-      if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
-      return Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+    if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+      navigator.serviceWorker.register('sw.js').catch(function () {});
     }
 
-    function pluralize(n, one, many) { return n + ' ' + (n === 1 ? one : many); }
-
-    var rtf = (typeof Intl !== 'undefined' && Intl.RelativeTimeFormat)
-      ? new Intl.RelativeTimeFormat('pt-BR', { numeric: 'auto' })
-      : null;
-
-    function relativeTime(ts) {
-      var diff = (ts - Date.now()) / 1000;
-      var abs = Math.abs(diff);
-      if (abs < 45) return 'agora';
-      if (!rtf) return new Date(ts).toLocaleString('pt-BR');
-      var units = [['year', 31557600], ['month', 2629800], ['week', 604800], ['day', 86400], ['hour', 3600], ['minute', 60]];
-      for (var i = 0; i < units.length; i++) {
-        if (abs >= units[i][1] || units[i][0] === 'minute') {
-          return rtf.format(Math.round(diff / units[i][1]), units[i][0]);
-        }
-      }
-      return '';
-    }
-
-    function setTime(el, ts) {
-      var d = new Date(ts);
-      el.dateTime = d.toISOString();
-      el.dataset.ts = String(ts);
-      el.title = d.toLocaleString('pt-BR');
-      el.textContent = relativeTime(ts);
-    }
-
+    var statusEl = document.getElementById('status');
     var statusTimer = null;
-    function announce(message) {
-      els.status.textContent = message;
-      els.status.classList.add('is-visible');
+    function announce(msg) {
+      if (!statusEl) return;
+      statusEl.textContent = msg;
+      statusEl.classList.add('is-visible');
       clearTimeout(statusTimer);
-      statusTimer = setTimeout(function () { els.status.classList.remove('is-visible'); }, 3200);
+      statusTimer = setTimeout(function () { statusEl.classList.remove('is-visible'); }, 3500);
     }
 
-    function svgUse(id, className) {
-      var ns = 'http://www.w3.org/2000/svg';
-      var svg = document.createElementNS(ns, 'svg');
-      svg.setAttribute('class', 'icon' + (className ? ' ' + className : ''));
-      svg.setAttribute('aria-hidden', 'true');
-      svg.setAttribute('focusable', 'false');
-      var use = document.createElementNS(ns, 'use');
-      use.setAttribute('href', '#' + id);
-      svg.appendChild(use);
-      return svg;
-    }
-
-    // ========================================================================
-    // PERSISTÊNCIA (localStorage — funciona offline no APK)
-    // ========================================================================
-    function sanitizePost(p) {
-      if (!p || typeof p !== 'object') return null;
-      if (typeof p.image !== 'string' || p.image.indexOf('data:image/') !== 0) return null;
-      var rating = Math.round(Number(p.rating));
-      if (!(rating >= 1 && rating <= 5)) return null;
-      var details = String(p.details || '').slice(0, DETAILS_MAX);
-      if (!details.trim()) return null;
-      var comments = Array.isArray(p.comments) ? p.comments : [];
-      return {
-        id: String(p.id || uid()),
-        image: p.image,
-        details: details,
-        rating: rating,
-        createdAt: Number(p.createdAt) || Date.now(),
-        comments: comments
-          .filter(function (c) { return c && typeof c.text === 'string' && c.text.trim(); })
-          .map(function (c) {
-            return { id: String(c.id || uid()), text: c.text.slice(0, COMMENT_MAX), createdAt: Number(c.createdAt) || Date.now() };
-          })
-      };
-    }
-
-    function loadPosts() {
+    function decodeJwt(tok) {
       try {
-        var data = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
-        return Array.isArray(data) ? data.map(sanitizePost).filter(Boolean) : [];
+        var p = tok.split('.')[1];
+        if (!p) return null;
+        var b64 = p.replace(/-/g, '+').replace(/_/g, '/');
+        while (b64.length % 4) b64 += '=';
+        var data = JSON.parse(decodeURIComponent(atob(b64).split('').map(function (c) {
+          return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+        }).join('')));
+        if (!data || typeof data.exp !== 'number' || Date.now() > data.exp) return null;
+        return data;
       } catch (e) {
-        return [];
+        return null;
       }
     }
 
-    function savePosts() {
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(state.posts));
-        return true;
-      } catch (e) {
-        return false; // armazenamento cheio: os dados ficam só nesta sessão
-      }
+    var authToken = localStorage.getItem('cuidacao_token') || null;
+    var currentUser = authToken ? decodeJwt(authToken) : null;
+    if (authToken && !currentUser) {
+      localStorage.removeItem('cuidacao_token');
+      authToken = null;
     }
 
-    // ========================================================================
-    // IMAGEM: PREVIEW INSTANTÂNEO (FileReader) + OTIMIZAÇÃO PARA SALVAR
-    // ========================================================================
-    function readFileAsDataURL(file) {
-      return new Promise(function (resolve, reject) {
-        var reader = new FileReader();
-        reader.onload = function () { resolve(reader.result); };
-        reader.onerror = function () { reject(reader.error); };
-        reader.readAsDataURL(file);
-      });
+    var loginModal = document.getElementById('comm-login-modal');
+    var loginClose = document.getElementById('comm-login-close');
+    var loginForm = document.getElementById('comm-login-form');
+    var loginErr = document.getElementById('comm-login-error');
+    var authBar = document.getElementById('comm-auth-bar');
+    var feedCtrl = null;
+
+    function openLogin() {
+      if (loginErr) loginErr.hidden = true;
+      if (loginModal) loginModal.hidden = false;
+      var em = document.getElementById('comm-email');
+      if (em) em.focus();
+    }
+    function closeLogin() {
+      if (loginModal) loginModal.hidden = true;
     }
 
-    function loadImage(src) {
-      return new Promise(function (resolve, reject) {
-        var img = new Image();
-        img.onload = function () { resolve(img); };
-        img.onerror = reject;
-        img.src = src;
-      });
-    }
-
-    // Reduz para no máximo 1280px e converte para JPEG (fotos de celular têm vários MB)
-    function optimizeImage(dataUrl) {
-      return loadImage(dataUrl).then(function (img) {
-        var w = img.naturalWidth;
-        var h = img.naturalHeight;
-        var scale = Math.min(1, IMAGE_MAX_SIDE / Math.max(w, h));
-        if (scale === 1 && dataUrl.length < 400000) return dataUrl;
-
-        var canvas = document.createElement('canvas');
-        canvas.width = Math.round(w * scale);
-        canvas.height = Math.round(h * scale);
-        var ctx = canvas.getContext('2d');
-        ctx.fillStyle = '#ffffff'; // PNG transparente não fica com fundo preto
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        return canvas.toDataURL('image/jpeg', IMAGE_QUALITY);
-      });
-    }
-
-    function handleFile(file) {
-      hideError();
-      if (!file) return;
-
-      if (!/^image\//.test(file.type)) {
-        els.fileInput.value = '';
-        showError('Selecione um arquivo de imagem (JPG, PNG ou WebP).', els.fileInput);
-        return;
-      }
-      if (file.size > IMAGE_MAX_BYTES) {
-        els.fileInput.value = '';
-        showError('A imagem deve ter no máximo 10 MB.', els.fileInput);
-        return;
-      }
-
-      var token = ++state.image.token;
-      readFileAsDataURL(file).then(function (dataUrl) {
-        if (token !== state.image.token) return; // outra imagem foi escolhida nesse meio tempo
-        els.previewImg.src = dataUrl;
-        els.preview.hidden = false;
-        els.dropzone.hidden = true;
-        state.image.job = optimizeImage(dataUrl).catch(function () { return dataUrl; });
-      }).catch(function () {
-        if (token === state.image.token) showError('Não foi possível ler a imagem. Tente outra.', els.fileInput);
-      });
-    }
-
-    function clearImage() {
-      state.image.token++;
-      state.image.job = null;
-      els.fileInput.value = '';
-      els.previewImg.removeAttribute('src');
-      els.preview.hidden = true;
-      els.dropzone.hidden = false;
-    }
-
-    els.fileInput.addEventListener('change', function () {
-      handleFile(els.fileInput.files && els.fileInput.files[0]);
-    });
-
-    els.previewChange.addEventListener('click', function () { els.fileInput.click(); });
-
-    els.previewRemove.addEventListener('click', function () {
-      clearImage();
-      els.fileInput.focus();
-    });
-
-    // Arrastar e soltar (desktop)
-    ['dragenter', 'dragover'].forEach(function (type) {
-      els.dropzone.addEventListener(type, function (e) {
-        e.preventDefault();
-        els.dropzone.classList.add('is-dragover');
-      });
-    });
-    ['dragleave', 'drop'].forEach(function (type) {
-      els.dropzone.addEventListener(type, function () { els.dropzone.classList.remove('is-dragover'); });
-    });
-    els.dropzone.addEventListener('drop', function (e) {
-      e.preventDefault();
-      var file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-      handleFile(file);
-    });
-
-    // ========================================================================
-    // DETALHES
-    // ========================================================================
-    els.details.addEventListener('input', function () {
-      els.detailsCount.textContent = els.details.value.length + ' / ' + DETAILS_MAX;
-      if (els.details.value.trim()) {
-        els.details.removeAttribute('aria-invalid');
-        hideError();
-      }
-    });
-
-    // ========================================================================
-    // AVALIAÇÃO POR ESTRELAS (radiogroup acessível)
-    // ========================================================================
-    function buildRating() {
-      for (var i = 1; i <= 5; i++) {
-        var btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'star';
-        btn.dataset.value = String(i);
-        btn.setAttribute('role', 'radio');
-        btn.setAttribute('aria-checked', 'false');
-        btn.setAttribute('aria-label', pluralize(i, 'estrela', 'estrelas') + ', ' + RATING_LABELS[i]);
-        btn.tabIndex = i === 1 ? 0 : -1;
-        btn.appendChild(svgUse('i-star'));
-        els.rating.appendChild(btn);
-        stars.push(btn);
-      }
-    }
-
-    function paintStars(value, isPreview) {
-      stars.forEach(function (star, idx) { star.classList.toggle('is-filled', idx < value); });
-      els.rating.classList.toggle('is-previewing', !!isPreview);
-      els.ratingCaption.textContent = value ? value + ' de 5 · ' + RATING_LABELS[value] : RATING_LABELS[0];
-    }
-
-    function setRating(value, moveFocus) {
-      state.rating = value;
-      stars.forEach(function (star, idx) {
-        var checked = idx + 1 === value;
-        star.setAttribute('aria-checked', String(checked));
-        star.tabIndex = (value ? checked : idx === 0) ? 0 : -1;
-      });
-      paintStars(value, false);
-
-      if (value) {
-        var current = stars[value - 1];
-        current.classList.remove('is-pop');
-        void current.offsetWidth; // reinicia a animação
-        current.classList.add('is-pop');
-        if (moveFocus) current.focus();
-        hideError();
-      }
-    }
-
-    els.rating.addEventListener('click', function (e) {
-      var star = e.target.closest('.star');
-      if (star) setRating(Number(star.dataset.value), false);
-    });
-
-    // Hover apenas com mouse (no toque, o "hover" ficaria preso)
-    els.rating.addEventListener('pointerover', function (e) {
-      if (e.pointerType !== 'mouse') return;
-      var star = e.target.closest('.star');
-      if (star) paintStars(Number(star.dataset.value), true);
-    });
-    els.rating.addEventListener('pointerleave', function () { paintStars(state.rating, false); });
-
-    els.rating.addEventListener('keydown', function (e) {
-      var current = state.rating || 0;
-      var next = null;
-      if (e.key === 'ArrowRight' || e.key === 'ArrowUp') next = Math.min(5, current + 1);
-      else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') next = Math.max(1, current - 1);
-      else if (e.key === 'Home') next = 1;
-      else if (e.key === 'End') next = 5;
-      if (next !== null) {
-        e.preventDefault();
-        setRating(next, true);
-      }
-    });
-
-    // ========================================================================
-    // ERROS DO FORMULÁRIO
-    // ========================================================================
-    function showError(message, focusEl) {
-      els.error.textContent = message;
-      els.error.hidden = false;
-      if (focusEl) focusEl.focus();
-    }
-
-    function hideError() {
-      els.error.hidden = true;
-      els.error.textContent = '';
-    }
-
-    // ========================================================================
-    // PUBLICAR
-    // ========================================================================
-    els.form.addEventListener('submit', function (e) {
-      e.preventDefault();
-      hideError();
-
-      var details = els.details.value.trim();
-
-      if (!state.image.job) {
-        showError('Anexe uma imagem do evento.', els.fileInput);
-        return;
-      }
-      if (!details) {
-        els.details.setAttribute('aria-invalid', 'true');
-        showError('Descreva os detalhes do evento.', els.details);
-        return;
-      }
-      if (details.length > DETAILS_MAX) {
-        els.details.setAttribute('aria-invalid', 'true');
-        showError('Os detalhes devem ter no máximo ' + DETAILS_MAX + ' caracteres.', els.details);
-        return;
-      }
-      if (state.rating < 1 || state.rating > 5) {
-        showError('Avalie o evento de 1 a 5 estrelas.', stars[0]);
-        return;
-      }
-
-      els.submit.disabled = true;
-      els.submit.textContent = 'Publicando';
-
-      state.image.job.then(function (image) {
-        var post = {
-          id: uid(),
-          image: image,
-          details: details,
-          rating: state.rating,
-          createdAt: Date.now(),
-          comments: []
+    function renderAuth() {
+      if (!authBar) return;
+      authBar.textContent = '';
+      if (currentUser && authToken) {
+        var span = document.createElement('span');
+        span.style.fontWeight = '700';
+        span.textContent = '👤 ' + currentUser.name.split(' ')[0];
+        var outBtn = document.createElement('button');
+        outBtn.type = 'button';
+        outBtn.textContent = 'Sair';
+        outBtn.style.cssText = 'border:1px solid var(--border-strong);background:var(--surface);padding:4px 10px;border-radius:999px;font-size:0.75rem;font-weight:700;';
+        outBtn.onclick = function () {
+          authToken = null;
+          currentUser = null;
+          localStorage.removeItem('cuidacao_token');
+          renderAuth();
+          if (feedCtrl) feedCtrl.reload();
+          announce('Sessão encerrada.');
         };
-
-        state.posts.unshift(post);
-        var saved = savePosts();
-
-        var node = renderPost(post);
-        node.classList.add('is-new');
-        els.feed.insertBefore(node, els.feed.firstChild);
-        updateFeedMeta();
-        resetComposer();
-
-        announce(saved ? 'Alerta publicado.' : 'Alerta publicado, mas o armazenamento do aparelho está cheio.');
-        node.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'start' });
-      }).finally(function () {
-        els.submit.disabled = false;
-        els.submit.textContent = 'Publicar';
-      });
-    });
-
-    function resetComposer() {
-      els.form.reset();
-      clearImage();
-      els.details.removeAttribute('aria-invalid');
-      els.detailsCount.textContent = '0 / ' + DETAILS_MAX;
-      setRating(0, false);
-      hideError();
-    }
-
-    // ========================================================================
-    // FEED
-    // ========================================================================
-    function renderStaticStars(container, rating) {
-      container.setAttribute('aria-label', 'Avaliação: ' + rating + ' de 5 estrelas');
-      for (var i = 1; i <= 5; i++) {
-        container.appendChild(svgUse('i-star', i <= rating ? 'is-filled' : ''));
+        authBar.appendChild(span);
+        authBar.appendChild(outBtn);
+      } else {
+        var inBtn = document.createElement('button');
+        inBtn.type = 'button';
+        inBtn.className = 'btn btn-primary';
+        inBtn.style.cssText = 'min-height:36px;padding:0 14px;font-size:0.8125rem;';
+        inBtn.textContent = 'Entrar para publicar';
+        inBtn.onclick = openLogin;
+        authBar.appendChild(inBtn);
       }
     }
 
-    function renderPost(post) {
-      var node = els.tplPost.content.firstElementChild.cloneNode(true);
-      node.dataset.id = post.id;
-
-      var img = $('.post-img', node);
-      img.src = post.image;
-      img.alt = 'Imagem do evento: ' + post.details.slice(0, 80);
-
-      renderStaticStars($('.stars-static', node), post.rating);
-      setTime($('.post-time', node), post.createdAt);
-      $('.post-details', node).textContent = post.details; // textContent: sem risco de HTML injetado
-
-      // Liga label, textarea e contador com IDs únicos por card
-      var inputId = 'comment-' + post.id;
-      var counterId = 'counter-' + post.id;
-      var label = $('.comment-label', node);
-      var textarea = $('.comment-input', node);
-      var counter = $('.counter', node);
-      label.htmlFor = inputId;
-      textarea.id = inputId;
-      counter.id = counterId;
-      textarea.setAttribute('aria-describedby', counterId);
-      textarea.maxLength = COMMENT_MAX;
-      counter.textContent = '0 / ' + COMMENT_MAX;
-
-      var list = $('.comment-list', node);
-      post.comments.forEach(function (c) { list.appendChild(renderComment(c)); });
-      $('.comments-count', node).textContent = String(post.comments.length);
-
-      return node;
+    if (loginClose) loginClose.onclick = closeLogin;
+    if (loginModal) {
+      loginModal.addEventListener('click', function (e) {
+        if (e.target === loginModal) closeLogin();
+      });
     }
-
-    function renderComment(comment) {
-      var node = els.tplComment.content.firstElementChild.cloneNode(true);
-      setTime($('.comment-time', node), comment.createdAt);
-      $('.comment-text', node).textContent = comment.text;
-      return node;
-    }
-
-    function renderFeed() {
-      var frag = document.createDocumentFragment();
-      state.posts.forEach(function (p) { frag.appendChild(renderPost(p)); });
-      els.feed.textContent = '';
-      els.feed.appendChild(frag);
-      updateFeedMeta();
-    }
-
-    function updateFeedMeta() {
-      var n = state.posts.length;
-      els.feedEmpty.hidden = n > 0;
-      els.feedCount.textContent = n ? pluralize(n, 'publicação', 'publicações') : '';
-    }
-
-    // ========================================================================
-    // COMENTÁRIOS (delegação de eventos no feed)
-    // ========================================================================
-    function autoGrow(textarea) {
-      textarea.style.height = 'auto';
-      textarea.style.height = Math.min(textarea.scrollHeight, 160) + 'px';
-    }
-
-    function setCommentError(form, message) {
-      var error = $('.comment-error', form);
-      var textarea = $('.comment-input', form);
-      error.textContent = message || '';
-      form.classList.toggle('has-error', !!message);
-      if (message) textarea.setAttribute('aria-invalid', 'true');
-      else textarea.removeAttribute('aria-invalid');
-    }
-
-    function updateCommentCounter(textarea) {
-      var form = textarea.form;
-      var length = textarea.value.length;
-      var counter = $('.counter', form);
-      counter.textContent = length + ' / ' + COMMENT_MAX;
-      counter.classList.toggle('is-limit', length >= COMMENT_MAX);
-      form.classList.toggle('is-ready', textarea.value.trim().length > 0 && length <= COMMENT_MAX);
-    }
-
-    els.feed.addEventListener('input', function (e) {
-      var textarea = e.target;
-      if (!textarea.classList || !textarea.classList.contains('comment-input')) return;
-      updateCommentCounter(textarea);
-      autoGrow(textarea);
-      if (textarea.value.trim()) setCommentError(textarea.form, '');
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && loginModal && !loginModal.hidden) closeLogin();
     });
 
-    // Ctrl/Cmd + Enter envia (Enter sozinho quebra linha, como no teclado do celular)
-    els.feed.addEventListener('keydown', function (e) {
-      var textarea = e.target;
-      if (!textarea.classList || !textarea.classList.contains('comment-input')) return;
-      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+    if (loginForm) {
+      loginForm.addEventListener('submit', function (e) {
         e.preventDefault();
-        var form = textarea.form;
-        if (typeof form.requestSubmit === 'function') form.requestSubmit();
-        else form.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
-      }
-    });
-
-    els.feed.addEventListener('submit', function (e) {
-      var form = e.target;
-      if (!form.classList.contains('comment-form')) return;
-      e.preventDefault();
-
-      var textarea = $('.comment-input', form);
-      var raw = textarea.value;
-      var text = raw.trim();
-
-      // Validação: vazio ou acima do limite não é enviado
-      if (!text) {
-        setCommentError(form, 'Escreva um comentário antes de enviar.');
-        textarea.focus();
-        return;
-      }
-      if (raw.length > COMMENT_MAX || text.length > COMMENT_MAX) {
-        setCommentError(form, 'O comentário deve ter no máximo ' + COMMENT_MAX + ' caracteres.');
-        textarea.focus();
-        return;
-      }
-
-      var postEl = form.closest('.post');
-      var post = state.posts.find(function (p) { return p.id === postEl.dataset.id; });
-      if (!post) return;
-
-      var comment = { id: uid(), text: text, createdAt: Date.now() };
-      post.comments.unshift(comment);
-      var saved = savePosts();
-
-      var node = renderComment(comment);
-      node.classList.add('is-new');
-      var list = $('.comment-list', postEl);
-      list.insertBefore(node, list.firstChild);
-      $('.comments-count', postEl).textContent = String(post.comments.length);
-
-      textarea.value = '';
-      setCommentError(form, '');
-      updateCommentCounter(textarea);
-      autoGrow(textarea);
-
-      if (!saved) announce('Comentário enviado, mas o armazenamento do aparelho está cheio.');
-    });
-
-    // ========================================================================
-    // INICIALIZAÇÃO
-    // ========================================================================
-    buildRating();
-    renderFeed();
-
-    // Mantém "há 5 minutos" etc. atualizado
-    setInterval(function () {
-      document.querySelectorAll('time[data-ts]').forEach(function (el) {
-        el.textContent = relativeTime(Number(el.dataset.ts));
+        if (loginErr) loginErr.hidden = true;
+        var email = document.getElementById('comm-email').value.trim();
+        var password = document.getElementById('comm-pass').value;
+        fetch(API_BASE + '/api/v1/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: email, password: password })
+        }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, json: j }; }); })
+          .then(function (res) {
+            if (res.ok && res.json.token) {
+              authToken = res.json.token;
+              currentUser = res.json.user;
+              localStorage.setItem('cuidacao_token', authToken);
+              closeLogin();
+              renderAuth();
+              if (feedCtrl) {
+                feedCtrl.flushOutbox();
+                feedCtrl.reload();
+              }
+              announce('Autenticado como ' + currentUser.name + '!');
+            } else if (loginErr) {
+              loginErr.textContent = res.json.error || 'Credenciais inválidas.';
+              loginErr.hidden = false;
+            }
+          }).catch(function () {
+            if (loginErr) {
+              loginErr.textContent = 'Sem conexão com o servidor.';
+              loginErr.hidden = false;
+            }
+          });
       });
-    }, 60000);
+    }
+
+    renderAuth();
+
+    feedCtrl = window.CuidacaoCommunityFeed.mount({
+      root: document,
+      apiBase: API_BASE,
+      spritePrefix: 'i-',
+      iconClass: 'icon',
+      starBtnClass: 'star',
+      postItemSel: '.post',
+      postMediaSel: '.post-media',
+      postImgSel: '.post-img',
+      postBodySel: '.post-body',
+      starsStaticSel: '.stars-static',
+      postTimeSel: '.post-time',
+      postDetailsSel: '.post-details',
+      commentFormSel: '.comment-form',
+      commentLabelSel: '.comment-label',
+      commentInputSel: '.comment-input',
+      commentCounterSel: '.counter',
+      commentErrorSel: '.comment-error',
+      commentListSel: '.comment-list',
+      commentsCountSel: '.comments-count',
+      commentAuthorSel: '.comment-author',
+      commentTimeSel: '.comment-time',
+      commentTextSel: '.comment-text',
+      selectors: {
+        form: '#post-form',
+        fileInput: '#post-image',
+        dropzone: '#dropzone',
+        preview: '#preview',
+        previewImg: '#preview-img',
+        previewChange: '#preview-change',
+        previewRemove: '#preview-remove',
+        typeSelect: '#post-type',
+        includeCoords: '#post-include-coords',
+        details: '#post-details',
+        detailsCount: '#post-details-count',
+        rating: '#post-rating',
+        ratingCaption: '#rating-caption',
+        error: '#post-error',
+        submit: '#post-submit',
+        feed: '#feed',
+        feedEmpty: '#feed-empty',
+        feedCount: '#feed-count',
+        tplPost: '#tpl-post',
+        tplComment: '#tpl-comment'
+      },
+      getAuthToken: function () { return authToken; },
+      getCurrentUser: function () { return currentUser; },
+      getCoordinates: function () {
+        var sel = document.getElementById('post-neighborhood');
+        if (!sel || !sel.value) return null;
+        var parts = sel.value.split(',');
+        return {
+          lat: parseFloat(parts[0]),
+          lng: parseFloat(parts[1]),
+          address: parts.slice(2).join(',').trim()
+        };
+      },
+      onAuthRequired: openLogin,
+      onUnauthorized: function () {
+        authToken = null;
+        currentUser = null;
+        localStorage.removeItem('cuidacao_token');
+        renderAuth();
+        openLogin();
+        announce('Sessão expirada. Faça login novamente.');
+      },
+      notify: function (msg) { announce(msg); }
+    });
   })();
   </script>
 </body>

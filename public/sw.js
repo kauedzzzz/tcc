@@ -1,35 +1,53 @@
-/* CuidAção — Service Worker (PWA)
- * - App shell em cache (abre mesmo sem internet)
- * - Bibliotecas de CDN (Tailwind/Leaflet): stale-while-revalidate
+/* CuidAção — Service Worker (PWA 100% Offline-First)
+ * - App shell completo em cache (HTML, Tailwind estático, Leaflet local, ícones e imagens locais)
+ * - Sem dependência de CDNs JIT em runtime: funciona offline no primeiro acesso e no APK Capacitor
  * - Tiles do mapa: cache com limite (mapa visitado continua visível offline)
- * - API de locais/alertas: rede primeiro, com os últimos dados como reserva offline
+ * - API de locais/alertas/analytics: rede primeiro, com os últimos dados como reserva offline
  */
-const VERSION = 'v6';
+const VERSION = 'v7-27f89201dd';
 const SHELL_CACHE = 'cuidacao-shell-' + VERSION;
 const RUNTIME_CACHE = 'cuidacao-runtime-' + VERSION;
 const TILE_CACHE = 'cuidacao-tiles-' + VERSION;
 const API_CACHE = 'cuidacao-api-' + VERSION;
 const MAX_TILES = 400;
 
-// Mantenha estes caminhos iguais aos do index.html (incluindo o ?v=)
+// Validado automaticamente por scripts/build.js e scripts/doctor.js
 const SHELL_ASSETS = [
   './',
   'index.html',
   'comunidade.html',
-  'css/styles.css?v=6',
+  'painel.html',
+  'css/tailwind.min.css',
+  'css/styles.css?v=7',
+  'vendor/leaflet/leaflet.css',
+  'vendor/leaflet/leaflet.js',
+  'vendor/leaflet/images/marker-icon.png',
+  'vendor/leaflet/images/marker-icon-2x.png',
+  'vendor/leaflet/images/marker-shadow.png',
+  'vendor/leaflet/images/layers.png',
+  'vendor/leaflet/images/layers-2x.png',
+  'vendor/markercluster/MarkerCluster.css',
+  'vendor/markercluster/MarkerCluster.Default.css',
+  'vendor/markercluster/leaflet.markercluster.js',
+  'vendor/leaflet-heat/leaflet-heat.js',
+  'images/mata-atlantica.webp',
+  'images/mata-atlantica.jpg',
   'js/config.js',
-  'js/map/live-gps.js?v=6',
-  'js/map/pharmacies-data.js?v=6',
-  'js/map/pharmacy-layer.js?v=6',
-  'js/app.js?v=6',
+  'js/community/feed.js?v=7',
+  'js/map/live-gps.js?v=7',
+  'js/map/pharmacies-data.js?v=7',
+  'js/map/pharmacy-layer.js?v=7',
+  'js/app.js?v=7',
   'manifest.json',
+  'icons/apple-touch-icon.png',
   'icons/icon-192.png',
-  'icons/icon-512.png'
+  'icons/icon-512.png',
+  'icons/icon-maskable-512.png'
 ];
 
-const CDN_HOSTS = ['cdn.tailwindcss.com', 'unpkg.com', 'accounts.google.com'];
+const CDN_HOSTS = ['accounts.google.com'];
 const TILE_HOSTS = ['tile.openstreetmap.org', 'server.arcgisonline.com'];
-const CACHEABLE_API = ['/api/v1/locations', '/api/v1/reports'];
+const CACHEABLE_API = ['/api/v1/locations', '/api/v1/reports', '/api/v1/analytics/summary'];
 
 self.addEventListener('install', (event) => {
   self.skipWaiting();
@@ -111,7 +129,7 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Bibliotecas externas
+  // Google Identity (opcional)
   if (CDN_HOSTS.includes(url.hostname)) {
     event.respondWith(staleWhileRevalidate(req, RUNTIME_CACHE));
     return;
@@ -119,7 +137,13 @@ self.addEventListener('fetch', (event) => {
 
   if (url.origin !== self.location.origin) return;
 
-  // API própria: só listas públicas ficam disponíveis offline
+  // Imagens enviadas pela comunidade
+  if (url.pathname.startsWith('/api/v1/uploads/')) {
+    event.respondWith(cacheFirst(req, RUNTIME_CACHE, 120));
+    return;
+  }
+
+  // API própria: listas públicas ficam disponíveis offline
   if (url.pathname.startsWith('/api/')) {
     if (CACHEABLE_API.some((p) => url.pathname === p)) {
       event.respondWith(networkFirst(req, API_CACHE, 4000));
@@ -127,15 +151,21 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Navegação: rede primeiro; offline abre o app shell
+  // Navegação: rede primeiro; offline abre a página correspondente em cache ou o app shell
   if (req.mode === 'navigate') {
     event.respondWith(
-      fetch(req).catch(() => caches.match('index.html').then((r) => r || caches.match('./')))
+      fetch(req).catch(async () => {
+        const pageName = url.pathname.replace(/^\//, '');
+        if (pageName) {
+          const matched = await caches.match(pageName);
+          if (matched) return matched;
+        }
+        return (await caches.match('index.html')) || caches.match('./');
+      })
     );
     return;
   }
 
-  // Demais arquivos do app (css/js/ícones)
+  // Demais arquivos do app (css/js/vendors/ícones/imagens)
   event.respondWith(staleWhileRevalidate(req, SHELL_CACHE));
 });
-
